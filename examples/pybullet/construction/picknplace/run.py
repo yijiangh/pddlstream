@@ -20,6 +20,8 @@ from pddlstream.language.generator import from_gen_fn, from_fn
 from pddlstream.utils import read, get_file_path, print_solution
 from pddlstream.algorithms.focused import solve_focused
 
+from examples.pybullet.utils.pybullet_tools.kuka_kr6r900_ik.ik import sample_tool_ik
+
 
 #PICKNPLACE_DIRECTORY = 'picknplace/'
 PICKNPLACE_DIRECTORY = ''
@@ -31,7 +33,7 @@ PICKNPLACE_FILENAMES = {
 GRASP_NAMES = ['pick_grasp_approach_plane', 'pick_grasp_plane', 'pick_grasp_retreat_plane']
 TOOL_NAME = 'eef_tcp_frame' # robot_tool0 | eef_base_link | eef_tcp_frame
 SELF_COLLISIONS = False
-
+USE_IKFAST = True
 
 ##################################################
 
@@ -158,14 +160,28 @@ def get_ik_gen_fn(robot, brick_from_index, obstacle_from_name, max_attempts=25):
         #wait_for_interrupt()
         set_pose(body, pose.value)
         for _ in range(max_attempts):
-            set_joint_positions(robot, movable_joints, sample_fn()) # Random seed
+            if USE_IKFAST==False:
+                set_joint_positions(robot, movable_joints, sample_fn()) # Random seed
+
             attach_pose = multiply(pose.value, invert(grasp.attach))
-            attach_conf = inverse_kinematics(robot, tool_link, attach_pose)
+
+            if USE_IKFAST==False:
+                attach_conf = inverse_kinematics(robot, tool_link, attach_pose)
+            else:
+                attach_conf = sample_tool_ik(robot, attach_pose)
+
             if attach_conf is None:
                 continue
+
             approach_pose = multiply(attach_pose, ([0, 0, -0.1], unit_quat()))
             #approach_pose = multiply(pose.value, invert(grasp.approach))
-            approach_conf = inverse_kinematics(robot, tool_link, approach_pose)
+
+            if USE_IKFAST==False:
+                approach_conf = inverse_kinematics(robot, tool_link, approach_pose)
+            else:
+                approach_conf = sample_tool_ik(robot, approach_pose, prev_conf=attach_conf)
+
+
             if approach_conf is None:
                 continue
             # TODO: retreat
