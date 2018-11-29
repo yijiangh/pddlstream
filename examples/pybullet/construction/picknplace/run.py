@@ -186,6 +186,7 @@ def get_ik_gen_fn(robot, brick_from_index, obstacle_from_name, max_attempts=25):
                 continue
             # TODO: retreat
             path = plan_waypoints_joint_motion(robot, movable_joints, [approach_conf, attach_conf],
+                                               start_conf=approach_conf,
                                                obstacles=obstacle_from_name.values(),
                                                self_collisions=SELF_COLLISIONS, disabled_collisions=disabled_collisions)
             if path is None:
@@ -258,8 +259,9 @@ def get_pddlstream(robot, brick_from_index, obstacle_from_name):
         #('HandEmpty',),
     ]
 
-    #indices = brick_from_index.keys()
+    # indices = brick_from_index.keys()
     indices = range(2, 5)
+
     for index in list(indices):
         indices.append(index+6)
 
