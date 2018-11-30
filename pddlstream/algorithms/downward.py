@@ -12,15 +12,20 @@ from pddlstream.language.conversion import is_atom, is_negated_atom, objects_fro
 from pddlstream.utils import read, write, INF, Verbose, clear_dir, get_file_path, MockSet, find_unique, int_ceil
 
 # TODO: possible bug when path has a space or period
-# TODO: toggle between different FD versions
-FD_PATH = get_file_path(__file__, '../../FastDownward/builds/release32/')
-#FD_PATH = get_file_path(__file__, '../../FastDownward/builds/release64/')
+FD_PATH = None
+for release in ['release64', 'release32']:
+    path = get_file_path(__file__, '../../FastDownward/builds/{}/'.format(release))
+    if os.path.exists(path):
+        FD_PATH = path
+        break
+if FD_PATH is None:
+    raise RuntimeError('.../pddlstream$ ./FastDownward/build.py')
 FD_BIN = os.path.join(FD_PATH, 'bin')
 TRANSLATE_PATH = os.path.join(FD_BIN, 'translate')
 
 DOMAIN_INPUT = 'domain.pddl'
 PROBLEM_INPUT = 'problem.pddl'
-TRANSLATE_FLAGS = ['--negative-axioms'] # '--negative-axioms'
+TRANSLATE_FLAGS = ['--negative-axioms']
 original_argv = sys.argv[:]
 sys.argv = sys.argv[:1] + TRANSLATE_FLAGS + [DOMAIN_INPUT, PROBLEM_INPUT]
 sys.path.append(TRANSLATE_PATH)
@@ -125,16 +130,20 @@ Domain = namedtuple('Domain', ['name', 'requirements', 'types', 'type_dict', 'co
                                'predicates', 'predicate_dict', 'functions', 'actions', 'axioms'])
 
 def parse_domain(domain_pddl):
+    if isinstance(domain_pddl, Domain):
+        return domain_pddl
     domain = Domain(*parse_domain_pddl(parse_lisp(domain_pddl)))
     #for action in domain.actions:
     #    if (action.cost is not None) and isinstance(action.cost, pddl.Increase) and isinstance(action.cost.expression, pddl.NumericConstant):
     #        action.cost.expression.value = scale_cost(action.cost.expression.value)
     return domain
 
-Problem = namedtuple('Problem', ['task_name', 'task_domain_name', 'task_requirements', 'objects', 'init',
-                               'goal', 'use_metric'])
+Problem = namedtuple('Problem', ['task_name', 'task_domain_name', 'task_requirements',
+                                 'objects', 'init', 'goal', 'use_metric'])
 
 def parse_problem(domain, problem_pddl):
+    if isinstance(problem_pddl, Problem):
+        return problem_pddl
     return Problem(*parse_task_pddl(parse_lisp(problem_pddl), domain.type_dict, domain.predicate_dict))
 
 #def parse_action(lisp_list):
@@ -197,6 +206,10 @@ def fd_from_evaluation(evaluation):
 ##################################################
 
 def parse_goal(goal_expression, domain):
+    #try:
+    #    pass
+    #except SystemExit as e:
+    #    return False
     return parse_condition(pddl_list_from_expression(goal_expression),
                            domain.type_dict, domain.predicate_dict).simplified()
 
@@ -258,6 +271,7 @@ def sas_from_pddl(task, debug=False):
     #sas_task = translate.pddl_to_sas(task)
     with Verbose(debug):
         sas_task = sas_from_instantiated(instantiate_task(task))
+        sas_task.metric = task.use_min_cost_metric # TODO: are these sometimes not equal?
     return sas_task
 
 def translate_and_write_pddl(domain_pddl, problem_pddl, temp_dir, verbose):
@@ -453,8 +467,12 @@ def plan_preimage(combined_plan, goal):
 
 ##################################################
 
-def make_parameters(parameters):
-    return tuple(pddl.TypedObject(p, OBJECT) for p in parameters)
+def make_parameters(parameters, type=OBJECT):
+    return tuple(pddl.TypedObject(p, type) for p in parameters)
+
+
+def make_predicate(name, parameters):
+    return pddl.Predicate(name, make_parameters(parameters))
 
 
 def make_preconditions(preconditions):
@@ -462,13 +480,47 @@ def make_preconditions(preconditions):
 
 
 def make_effects(effects):
-    return [pddl.Effect(parameters=[], condition=pddl.Truth(), literal=fd_from_fact(fact)) for fact in effects]
+    return [pddl.Effect(parameters=[], condition=pddl.Truth(),
+                        literal=fd_from_fact(fact)) for fact in effects]
 
 
 def make_cost(cost):
+    if cost is None:
+        return cost
     fluent = pddl.PrimitiveNumericExpression(symbol=TOTAL_COST, args=[])
     expression = pddl.NumericConstant(cost)
     return pddl.Increase(fluent=fluent, expression=expression)
+
+
+def make_action(name, parameters, preconditions, effects, cost=None):
+    return pddl.Action(name=name,
+                       parameters=make_parameters(parameters),
+                       num_external_parameters=len(parameters),
+                       precondition=make_preconditions(preconditions),
+                       effects=make_effects(effects),
+                       cost=make_cost(cost))
+
+
+def make_axiom(parameters, preconditions, derived):
+    predicate = get_prefix(derived)
+    external_parameters = get_args(derived)
+    internal_parameters = [p for p in parameters if p not in external_parameters]
+    parameters = external_parameters + internal_parameters
+    return pddl.Axiom(name=predicate,
+                      parameters=make_parameters(parameters),
+                      num_external_parameters=len(external_parameters),
+                      condition=make_preconditions(preconditions))
+
+
+
+def make_domain(constants=[], predicates=[], functions=[], actions=[], axioms=[]):
+    import pddl_parser
+    types = [pddl.Type(OBJECT)]
+    pddl_parser.parsing_functions.set_supertypes(types)
+    return Domain(name='', requirements=pddl.Requirements([]),
+             types=types, type_dict={ty.name: ty for ty in types}, constants=constants,
+             predicates=predicates, predicate_dict={p.name: p for p in predicates},
+             functions=functions, actions=actions, axioms=axioms)
 
 ##################################################
 

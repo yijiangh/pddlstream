@@ -6,6 +6,7 @@ import cProfile
 import pstats
 import os
 import numpy as np
+import argparse
 
 from pddlstream.algorithms.downward import TOTAL_COST
 from pddlstream.algorithms.focused import solve_focused
@@ -13,9 +14,9 @@ from pddlstream.utils import clear_dir, ensure_dir
 
 from examples.continuous_tamp.constraint_solver import cfree_motion_fn, get_optimize_fn, has_gurobi
 from examples.continuous_tamp.primitives import get_pose_gen, collision_test, \
-    distance_fn, inverse_kin_fn, get_region_test, plan_motion, \
-    get_blocked_problem, draw_state, get_random_seed, \
-    TAMPState, get_tight_problem, GROUND_NAME, SUCTION_HEIGHT
+    distance_fn, inverse_kin_fn, get_region_test, plan_motion, PROBLEMS, \
+    draw_state, get_random_seed, TAMPState, GROUND_NAME, SUCTION_HEIGHT
+
 from pddlstream.algorithms.incremental import solve_incremental
 from pddlstream.algorithms.search import ABSTRIPSLayer
 from pddlstream.algorithms.visualization import VISUALIZATIONS_DIR
@@ -27,15 +28,18 @@ from pddlstream.language.function import FunctionInfo
 from pddlstream.language.optimizer import OptimizerInfo
 from pddlstream.utils import print_solution, user_input, read, INF, get_file_path, str_from_object
 
-def pddlstream_from_tamp(tamp_problem):
+def pddlstream_from_tamp(tamp_problem, use_stream=True, use_optimizer=False):
     initial = tamp_problem.initial
     assert(initial.holding is None)
 
     domain_pddl = read(get_file_path(__file__, 'domain.pddl'))
-    external_pddl = [
-        read(get_file_path(__file__, 'stream.pddl')),
-        #read(get_file_path(__file__, 'optimizer.pddl')),
-    ]
+    external_paths = []
+    if use_stream:
+        external_paths.append(get_file_path(__file__, 'stream.pddl'))
+    if use_optimizer:
+        external_paths.append(get_file_path(__file__, 'optimizer.pddl'))
+    external_pddl = [read(path) for path in external_paths]
+
     constant_map = {}
 
     init = [
@@ -67,11 +71,12 @@ def pddlstream_from_tamp(tamp_problem):
         't-cfree': from_test(lambda *args: not collision_test(*args)),
         'posecollision': collision_test, # Redundant
         'trajcollision': lambda *args: False,
-        'gurobi': from_fn(get_optimize_fn(tamp_problem.regions)),
-        'rrt': from_fn(cfree_motion_fn),
-        #'reachable': from_test(reachable_test),
-        #'Valid': valid_state_fn,
     }
+    if use_optimizer:
+        stream_map.update({
+            'gurobi': from_fn(get_optimize_fn(tamp_problem.regions)),
+            'rrt': from_fn(cfree_motion_fn),
+        })
     #stream_map = 'debug'
 
     return PDDLProblem(domain_pddl, constant_map, external_pddl, stream_map, init, goal)
@@ -129,18 +134,28 @@ def display_plan(tamp_problem, plan, display=True):
         user_input('Finish?')
 
 
-def main(focused=True, deterministic=False, unit_costs=False, use_synthesizers=False):
+def main(unit_costs=False, use_synthesizers=False):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-p', '--problem', default='blocked', help='The name of the problem to solve')
+    parser.add_argument('-d', '--deterministic', action='store_true', help='Uses a deterministic sampler')
+    parser.add_argument('-a', '--algorithm', default='focused', help='Specifies the algorithm')
+    args = parser.parse_args()
+    print('Arguments:', args)
+    print('Costs: {} | Synthesizers: {}'.format(not unit_costs, use_synthesizers))
+
     np.set_printoptions(precision=2)
-    if deterministic:
+    if args.deterministic:
         seed = 0
         np.random.seed(seed)
-    print('Seed:', get_random_seed())
+    print('Random seed:', get_random_seed())
     if use_synthesizers and not has_gurobi():
         use_synthesizers = False
         print('Warning! use_synthesizers=True requires gurobipy. Setting use_synthesizers=False.')
-    print('Focused: {} | Costs: {} | Synthesizers: {}'.format(focused, not unit_costs, use_synthesizers))
 
-    problem_fn = get_blocked_problem  # get_tight_problem | get_blocked_problem
+    if args.problem not in PROBLEMS:
+        raise ValueError(args.problem)
+    print('Problem:', args.problem)
+    problem_fn = PROBLEMS[args.problem]
     tamp_problem = problem_fn()
     print(tamp_problem)
 
@@ -173,15 +188,18 @@ def main(focused=True, deterministic=False, unit_costs=False, use_synthesizers=F
     print('Goal:', str_from_object(pddlstream_problem.goal))
     pr = cProfile.Profile()
     pr.enable()
-    if focused:
+    if args.algorithm == 'focused':
         solution = solve_focused(pddlstream_problem, action_info=action_info, stream_info=stream_info,
                                  planner='ff-wastar1', max_planner_time=10, synthesizers=synthesizers, verbose=True,
                                  max_time=300, max_cost=INF, debug=False, hierarchy=hierarchy,
                                  effort_weight=1, search_sampling_ratio=0, # TODO: run with search_sampling_ratio=1
                                  unit_costs=unit_costs, postprocess=False, visualize=False)
-    else:
+    elif args.algorithm == 'incremental':
         solution = solve_incremental(pddlstream_problem, layers=1, hierarchy=hierarchy,
                                      unit_costs=unit_costs, verbose=False)
+    else:
+        raise ValueError(args.algorithm)
+
     print_solution(solution)
     plan, cost, evaluations = solution
     pr.disable()
