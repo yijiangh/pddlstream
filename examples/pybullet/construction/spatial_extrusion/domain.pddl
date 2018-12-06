@@ -16,6 +16,7 @@
     (SecondConnection ?n ?e)
     (Supported ?e)
     (Supports ?e ?n)
+
     ; (Grounded ?e)
   )
   ; Most constrained -> least constrained
@@ -24,8 +25,11 @@
 
   (:action print
     :parameters (?n ?e ?t)
-    :precondition (and (PrintAction ?n ?e ?t) (Printed ?e)
+    :precondition (and (PrintAction ?n ?e ?t)
+                       (Printed ?e)
                        (forall (?e2) (imply (Supports ?e2 ?n) (Printed ?e2)))
+                       (forall (?e2) (imply (Collision ?t ?e2) (Removed ?e2))))
+
                        ; (Connected ?n)
                        ; (Supported ?n)
                        ; (SecondConnection ?n ?e)
@@ -33,10 +37,24 @@
                        ;(forall (?e2) (imply (Element ?e2)
                        ;                     (or (Connected ?e2) (Removed ?e2))))
                        ;(forall (?e2) (imply (Element ?e2)
-                       ;                     (or (CFree ?t ?e2) (Removed ?e2)))))
-                       (forall (?e2) (imply (Collision ?t ?e2) (Removed ?e2))))
+                       ;                     (or (CFree ?t ?e2) (Removed ?e2))))
+
+
     :effect (and (Removed ?e)
                  (not (Printed ?e)))
+  )
+
+  ; TODO: not used at this moment
+  ; Pairwise printable, exists two
+  (:derived (SecondConnection ?n ?e2) ; Prevents printing when only connected through ?e2
+    (and (StartNode ?n ?e2)
+         (or (Grounded ?n)
+             (exists (?e1)
+             (and (StartNode ?n ?e1)
+                  (Printed ?e1)
+                  (not (= ?e1 ?e2)))))
+             ; (Connected ?n1)
+    )
   )
 
   ;(:derived (Supported ?e2) ; Single support
@@ -55,12 +73,4 @@
   ;                            (Printed ?e) (Connected ?n1)))) ; Can also just do on StartNode
   ;)
   ; Either there exist another path or the connected node will not be printable
-
-  ; Pairwise printable, exists two
-  (:derived (SecondConnection ?n ?e2) ; Prevents printing when only connected through ?e2
-    (and (StartNode ?n ?e2)
-         (or (Grounded ?n)
-             (exists (?e1) (and (StartNode ?n ?e1) (Printed ?e1) (not (= ?e1 ?e2))))) ; (Connected ?n1)
-    )
-  )
 )

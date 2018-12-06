@@ -11,7 +11,6 @@ from examples.pybullet.utils.pybullet_tools.utils import add_line, create_cylind
     set_quat, get_movable_joints, set_joint_positions, pairwise_collision, Pose, multiply, Point, load_model, \
     HideOutput, load_pybullet
 
-#EXTRUSION_DIRECTORY = 'spatial_extrusion/'
 EXTRUSION_DIRECTORY = 'json/'
 EXTRUSION_FILENAMES = {
     'djmm_test_block': 'djmm_test_block_S1.0_09-17-2018.json',
@@ -21,6 +20,7 @@ EXTRUSION_FILENAMES = {
     'topopt-205': 'topopt-205_S0.7_09-17-2018.json',
     'topopt-310': 'topopt-310_S1.0_09-17-2018.json',
     'voronoi': 'voronoi_S1.0_09-05-2018.json',
+    'simple_frame': 'simple_frame.json',
 }
 
 KUKA_PATH = '../models/framefab_kr6_r900_support/urdf/kr6_r900.urdf'
@@ -33,11 +33,25 @@ DISABLED_COLLISIONS = [
     # ('robot_link_4', 'workspace_objects'),
     ('robot_link_5', 'eef_base_link'),
 ]
+
+LENGTH_UNIT_SCALE_TABLE = {
+    'meter': 1,
+    'millimeter': 1e-3,
+}
+
 # [u'base_frame_in_rob_base', u'element_list', u'node_list', u'assembly_type', u'model_type', u'unit']
 
 ##################################################
 
 def load_extrusion(extrusion_name):
+    """
+    Load extrusion frame model from a json file name (from EXTRUSION_FILENAMES above)
+    :param extrusion_name: json file name tag in EXTRUSION_FILENAMES.
+    :return:
+        elements = a list of e_tuple, e_tuple = [end_u_id, end_v_id]
+        node_points = a list of 3x1 np array (x,y,z) (in meter)
+        ground_nodes = a list of grounded node indices
+    """
     root_directory = os.path.dirname(os.path.abspath(__file__))
     extrusion_path = os.path.join(root_directory, EXTRUSION_DIRECTORY, EXTRUSION_FILENAMES[extrusion_name])
     print('Name: {}'.format(extrusion_name))
@@ -45,13 +59,17 @@ def load_extrusion(extrusion_name):
     with open(extrusion_path, 'r') as f:
         json_data = json.loads(f.read())
 
+    scale = LENGTH_UNIT_SCALE_TABLE[json_data['unit']]
+
     elements = parse_elements(json_data)
-    node_points = parse_node_points(json_data)
+    node_points = parse_node_points(json_data, scale)
     ground_nodes = parse_ground_nodes(json_data)
+
     print('Assembly: {} | Model: {} | Unit: {}'.format(
         json_data['assembly_type'], json_data['model_type'], json_data['unit'])) # extrusion, spatial_frame, millimeter
     print('Nodes: {} | Ground: {} | Elements: {}'.format(
         len(node_points), len(ground_nodes), len(elements)))
+
     return elements, node_points, ground_nodes
 
 def parse_point(json_point, scale=1e-3):
@@ -64,18 +82,16 @@ def parse_transform(json_transform):
                                    for axis in ['XAxis', 'YAxis', 'ZAxis']])
     return transform
 
-
-def parse_origin(json_data):
-    return parse_point(json_data['base_frame_in_rob_base']['Origin'])
-
+def parse_origin(json_data, scale=1e-3):
+    # TODO: this might involve transformation too
+    return parse_point(json_data['base_frame_in_rob_base']['Origin'], scale)
 
 def parse_elements(json_data):
     return [tuple(json_element['end_node_ids'])
             for json_element in json_data['element_list']] # 'layer_id
 
-
-def parse_node_points(json_data):
-    origin = parse_origin(json_data)
+def parse_node_points(json_data, scale=1e-3):
+    origin = parse_origin(json_data, scale)
     return [origin + parse_point(json_node['point']) for json_node in json_data['node_list']]
 
 
@@ -92,6 +108,14 @@ def draw_element(node_points, element, color=(1, 0, 0)):
 
 
 def create_elements(node_points, elements, radius=0.0005, color=(1, 0, 0, 1)):
+    """
+    Create extrusion elements' pybullet body. (obj pose's x axis is along the element's direction)
+    :param node_points: a list of (x,y,z)
+    :param elements: a list of e_tuple (end_u_id, end_v_id)
+    :param radius: radius of the extrusion element
+    :param color: render color
+    :return: a list of element pybullet bodies
+    """
     # TODO: just shrink the structure to prevent worrying about collisions at end-points
     #radius = 0.0001
     #radius = 0.00005
@@ -99,14 +123,16 @@ def create_elements(node_points, elements, radius=0.0005, color=(1, 0, 0, 1)):
     radius = 1e-6
     # TODO: seems to be a min radius
 
-    shrink = 0.01
+    # 2 mm works great for most models so far
+    shrink = 0.002
     #shrink = 0.
     element_bodies = []
     for (n1, n2) in elements:
         p1, p2 = node_points[n1], node_points[n2]
+
+        # if element length < shrink length, the collision body will be an empty cylinder
         height = max(np.linalg.norm(p2 - p1) - 2*shrink, 0)
-        #if height == 0: # Cannot keep this here
-        #    continue
+
         center = (p1 + p2) / 2
         # extents = (p2 - p1) / 2
         body = create_cylinder(radius, height, color=color)
@@ -123,6 +149,13 @@ def create_elements(node_points, elements, radius=0.0005, color=(1, 0, 0, 1)):
 
 
 def check_trajectory_collision(robot, trajectory, bodies):
+    """
+    Check robot's whole body collision with bodies at each conf along the trajectory
+    :param robot:
+    :param trajectory: a list of (joint_values), each joint_values is a dofx1 python list
+    :param bodies: pybullet collision bodies
+    :return: a boolean list indicating the collision flag - True: in collision, False for not
+    """
     # TODO: each new addition makes collision checking more expensive
     #offset = 4
     movable_joints = get_movable_joints(robot)
@@ -143,6 +176,10 @@ def check_trajectory_collision(robot, trajectory, bodies):
     #return multiply(thing, rot)
 
 def sample_direction():
+    """
+    Sample a vector on unit 3D sphere
+    :return: a pose (pybullet_utils.utils.Pose) with the sampled vector as z axis (0-yaw)
+    """
     ##roll = random.uniform(0, np.pi)
     #roll = np.pi/4
     #pitch = random.uniform(0, 2*np.pi)
@@ -153,7 +190,17 @@ def sample_direction():
 
 
 def get_grasp_pose(translation, direction, angle, reverse, offset=1e-3):
+    """
+
+    :param translation: translation in obj frame
+    :param direction: (roll, pitch)
+    :param angle: yaw angle (around obj frame z axis)
+    :param reverse: True if the element end pt id needs to be reversed
+    :param offset:
+    :return: Pose_{EE,element}
+    """
     #direction = Pose(euler=Euler(roll=np.pi / 2, pitch=direction))
+    offset = 0
     return multiply(Pose(point=Point(z=offset)),
                     Pose(euler=Euler(yaw=angle)),
                     direction,
@@ -162,6 +209,12 @@ def get_grasp_pose(translation, direction, angle, reverse, offset=1e-3):
 
 
 def load_world():
+    """
+    Load pybullet work env and robot
+    :return:
+        floor: work env printbed
+        robot: robot body
+    """
     root_directory = os.path.dirname(os.path.abspath(__file__))
     with HideOutput():
         floor = load_model('models/short_floor.urdf')
@@ -171,6 +224,11 @@ def load_world():
 
 
 def prune_dominated(trajectories):
+    """
+    check if the input trajectories has
+    :param trajectories: a list of PrintTrajectory (spatial_extrusion.run)
+    :return: True if no ..., False if not
+    """
     start_len = len(trajectories)
     for traj1 in list(trajectories):
         if any((traj1 != traj2) and (traj2.colliding <= traj1.colliding) for traj2 in trajectories):
@@ -180,6 +238,10 @@ def prune_dominated(trajectories):
 ##################################################
 
 def get_node_neighbors(elements):
+    """
+    :param elements: a list of element_id tuple: [end_u_id, end_v_id]
+    :return: a dict 'node_id': a list of connected elements' ids
+    """
     node_neighbors = defaultdict(set)
     for e in elements:
         n1, n2 = e
@@ -187,8 +249,11 @@ def get_node_neighbors(elements):
         node_neighbors[n2].add(e)
     return node_neighbors
 
-
 def get_element_neighbors(element_bodies):
+    """
+    :param element_bodies: a list of pybullet element bodies
+    :return: a dict 'element_id': a list of adjacent elements' ids
+    """
     node_neighbors = get_node_neighbors(element_bodies)
     element_neighbors = defaultdict(set)
     for e in element_bodies:

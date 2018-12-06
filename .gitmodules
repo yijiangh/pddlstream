@@ -1,6 +1,6 @@
 [submodule "examples/pybullet/utils"]
 	path = examples/pybullet/utils
-	url = https://github.com/yijiangh/ss-pybullet
+	url = https://github.com/yijiangh/ss-pybullet.git
 [submodule "FastDownward"]
 	path = FastDownward
 	url = https://github.com/caelan/FastDownward.git

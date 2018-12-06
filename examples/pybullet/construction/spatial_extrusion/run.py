@@ -12,18 +12,25 @@ from examples.pybullet.utils.pybullet_tools.utils import connect, disconnect, wa
     get_movable_joints, get_sample_fn, set_joint_positions, link_from_name, add_line, inverse_kinematics, \
     get_link_pose, multiply, wait_for_duration, add_text, angle_between, plan_joint_motion, \
     get_pose, invert, point_from_pose, get_distance, get_joint_positions, wrap_angle, \
-    get_collision_fn
+    get_collision_fn, dump_body, has_gui
 from pddlstream.algorithms.focused import solve_focused
 from pddlstream.language.constants import PDDLProblem, And
 from pddlstream.language.generator import from_test
 from pddlstream.language.stream import StreamInfo, PartialInputs, NEGATIVE_SUFFIX
 from pddlstream.utils import read, get_file_path, print_solution, user_input, irange, neighbors_from_orders
 
+from examples.pybullet.utils.pybullet_tools.kuka_kr6r900_ik.ik import sample_tool_ik
+
+# TODO: YJ: what does this mean?
 SUPPORT_THETA = np.math.radians(10)  # Support polygon
 
 JOINT_WEIGHTS = [0.3078557810844393, 0.443600199302506, 0.23544367607317915,
                  0.03637161028426032, 0.04644626184081511, 0.015054267683041092]
 
+USE_IKFAST = True
+CHECK_SELF_COLLISION = True
+
+# traj class
 class MotionTrajectory(object):
     def __init__(self, robot, joints, path, attachments=[]):
         self.robot = robot
@@ -37,19 +44,21 @@ class MotionTrajectory(object):
             set_joint_positions(self.robot, self.joints, conf)
             yield
     def __repr__(self):
-        return 'm({},{})'.format(len(self.joints), len(self.path))
+        return 'move(#Jt{},#Pt{})'.format(len(self.joints), len(self.path))
 
 class PrintTrajectory(object):
     def __init__(self, robot, joints, path, element, reverse, colliding=set()):
         self.robot = robot
         self.joints = joints
-        self.path = path
+        self.path = path# a list of conf
         self.n1, self.n2 = reversed(element) if reverse else element
         self.element = element
-        self.colliding = colliding
+        self.colliding = colliding # colliding elements' ids
     def __repr__(self):
-        return '{}->{}'.format(self.n1, self.n2)
+        return 'print(e{}->e{})'.format(self.n1, self.n2)
+# end traj class
 
+# util functions
 def get_other_node(node1, element):
     assert node1 in element
     return element[node1 == element[0]]
@@ -65,40 +74,93 @@ def draw_model(elements, node_points, ground_nodes):
     return handles
 
 def get_supported_orders(elements, node_points):
+    """
+    Construct all the printable in-edge/out-edge tuples.
+    :param elements: the full list of element tuple (end_u_id, end_v_id)
+    :param node_points: the full list of node pt (x,y,z)
+    :return: a list of printable (in-element id, out-element-id)
+    """
     node_neighbors = get_node_neighbors(elements)
     orders = set()
     for node in node_neighbors:
+        # eligible in-edges
         supporters = {e for e in node_neighbors[node] if element_supports(e, node, node_points)}
-        printers = {e for e in node_neighbors[node] if is_start_node(node, e, node_points) and not doubly_printable(e, node_points)}
+        # eligible out-edges
+        printers = {e for e in node_neighbors[node]
+                    if is_start_node(node, e, node_points) and not doubly_printable(e, node_points)}
         orders.update((e1, e2) for e1 in supporters for e2 in printers)
     return orders
 
-def element_supports(e, n1, node_points): # A property of nodes
+def element_supports(e, n1, node_points):
+    """
+    test if the element is pointing "downward" if starting with the node n1.
+    (this is a property of an end node of an element.)
+    
+    The criteria for determining "downward" is by computing the angle between the 
+    element's vector and -z axis and checking if this angle is in a certain user-defined range.
+    :param e: element (end_u_id, end_v_id)
+    :param n1: node id
+    :param node_points: the full list of node pts ()
+    :return: a boolean flag indicating if the element is pointing down (True) or not (False) starting from n1
+    """
     # TODO: support polygon (ZMP heuristic)
     # TODO: recursively apply as well
     # TODO: end-effector force
     # TODO: allow just a subset to support
     # TODO: construct using only upwards
+    
     n2 = get_other_node(n1, e)
     delta = node_points[n2] - node_points[n1]
     theta = angle_between(delta, [0, 0, -1])
     return theta < (np.pi / 2 - SUPPORT_THETA)
 
 def is_start_node(n1, e, node_points):
+    """
+    check if n1 is qualified to be the starting node of the element e.
+    :param n1: node id
+    :param e: element id
+    :param node_points: a full list of node pt (x,y,z)
+    :return: True if the element is "pointing upwards"
+    """
     return not element_supports(e, n1, node_points)
 
 def doubly_printable(e, node_points):
+    """
+    Check if both end pts of the element e is qualified for start pt.
+    :param e:
+    :param node_points:
+    :return: True if both ends are printable, False otherwise
+    """
     return all(is_start_node(n, e, node_points) for n in e)
 
 def retrace_supporters(element, incoming_edges, supporters):
+    """
+    Starting from element, trace back all the support in-coming elements
+    :param element:
+    :param incoming_edges: a dict(set), 'e_id': (printable incoming elements' ids)
+    :param supporters: [out] a set of support in-elements' ids
+    :return:
+    """
     for element2 in incoming_edges[element]:
         if element2 not in supporters:
             retrace_supporters(element2, incoming_edges, supporters=supporters)
             supporters.append(element2)
 
+# end util functions
 ##################################################
 
+# pddl parse, plan functions
 def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, trajectories=[]):
+    """
+    Specify PDDL problem instance
+    :param robot:
+    :param obstacles:
+    :param node_points:
+    :param element_bodies:
+    :param ground_nodes:
+    :param trajectories:
+    :return: result PDDLProblem
+    """
     # TODO: instantiation slowness is due to condition effects
 
     domain_pddl = read(get_file_path(__file__, 'domain.pddl'))
@@ -111,6 +173,7 @@ def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, 
         'sample-print': get_wild_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes),
     }
 
+    # assign initial values for predicates
     # TODO: assert that all elements have some support
     init = []
     for n in ground_nodes:
@@ -121,6 +184,7 @@ def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, 
                 init.append(('Supports', e, n))
             if is_start_node(n, e, node_points):
                 init.append(('StartNode', n, e))
+
     for e in element_bodies:
         n1, n2 = e
         init.extend([
@@ -138,83 +202,151 @@ def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, 
     #for e1, neighbors in get_element_neighbors(element_bodies).items():
     #    for e2 in neighbors:
     #        init.append(('Supports', e1, e2))
+
     for t in trajectories:
         init.extend([
             ('Traj', t),
             ('PrintAction', t.n1, t.element, t),
         ])
 
+    # the goal is the "remove" (print) all of the elements
     goal = And(*[('Removed', e) for e in element_bodies])
 
     return PDDLProblem(domain_pddl, constant_map, stream_pddl, stream_map, init, goal)
 
-
 def plan_sequence(robot, obstacles, node_points, element_bodies, ground_nodes, trajectories=[]):
-    if trajectories is None:
-        return None
+    """
+    :param robot:
+    :param obstacles: pybullet bodies for static collision objects
+    :param node_points: a (mx1) list of (x,y,z)
+    :param element_bodies: a (nx1) list of element's pybullet bodies
+    :param ground_nodes: an int list of grounded nodes' ids
+    :param trajectories: precomputed list of PrintTrajectory for init
+    :return:
+    """
+    # if trajectories is None:
+    #     print("Err: empty initial print trajectory.")
+    #     return None
+
     # TODO: iterated search using random restarts
     # TODO: most of the time seems to be spent extracting the stream plan
     # TODO: NEGATIVE_SUFFIX to make axioms easier
+
     pr = cProfile.Profile()
     pr.enable()
+
     pddlstream_problem = get_pddlstream(robot, obstacles, node_points, element_bodies,
                                         ground_nodes, trajectories=trajectories)
-    #solution = solve_exhaustive(pddlstream_problem, planner='goal-lazy', max_time=300, debug=True)
-    #solution = solve_incremental(pddlstream_problem, planner='add-random-lazy', max_time=600,
-    #                             max_planner_time=300, debug=True)
+
     stream_info = {
         'sample-print': StreamInfo(PartialInputs(unique=True)),
     }
+
     #planner = 'ff-ehc'
     planner = 'ff-lazy-tiebreak' # Branching factor becomes large. Rely on preferred. Preferred should also be cheaper
+
     solution = solve_focused(pddlstream_problem, stream_info=stream_info, max_time=30,
                              effort_weight=1, unit_efforts=True, use_skeleton=False, #unit_costs=True,
                              planner=planner, max_planner_time=15, reorder=False, debug=True)
+    #solution = solve_exhaustive(pddlstream_problem, planner='goal-lazy', max_time=300, debug=True)
+    #solution = solve_incremental(pddlstream_problem, planner='add-random-lazy', max_time=600,
+    #                             max_planner_time=300, debug=True)
+
     # Reachability heuristics good for detecting dead-ends
     # Infeasibility from the start means disconnected or collision
+
     print_solution(solution)
     pr.disable()
     pstats.Stats(pr).sort_stats('tottime').print_stats(10)
     plan, _, _ = solution
     if plan is None:
         return None
+
     return [t for _, (n1, e, t) in reversed(plan)]
 
+# end pddl parse, plan functions
 ##################################################
 
 def optimize_angle(robot, link, element_pose, translation, direction, reverse, initial_angles,
                    collision_fn, max_error=1e-2):
+    """
+
+    :param robot:
+    :param link: end effector link name
+    :param element_pose: element's pose in the world frame
+    :param translation: translation relative to the element's center frame
+    :param direction: end effector pose
+    :param reverse: True if element end pt id tuple needs to be reversed
+    :param initial_angles: initial EE rotational angle around EE frame's z axis
+    :param collision_fn: collision checker (pybullet_tools.utils.get_collision_fn)
+    note that all the static objs + elements in the support set of the considered element
+    are accounted in the collision fn
+    :param max_error: max allowable error on ||EE_pose.pt - element path pt||
+    :return:
+    """
     movable_joints = get_movable_joints(robot)
-    initial_conf = get_joint_positions(robot, movable_joints)
+
     best_error, best_angle, best_conf = max_error, None, None
+
+    initial_conf = get_joint_positions(robot, movable_joints)
+
     for i, angle in enumerate(initial_angles):
         grasp_pose = get_grasp_pose(translation, direction, angle, reverse)
+
+        # Pose_{world,EE} = Pose_{world,element} * Pose_{element,EE}
+        #                 = Pose_{world,element} * (Pose_{EE,element})^{-1}
         target_pose = multiply(element_pose, invert(grasp_pose))
-        conf = inverse_kinematics(robot, link, target_pose)
-        # if conf is None:
-        #    continue
+
+        set_joint_positions(robot, movable_joints, initial_conf)
+
+        if USE_IKFAST == False:
+            # note that the conf get assigned inside this ik fn right away!
+            conf = inverse_kinematics(robot, link, target_pose)
+        else:
+            conf = sample_tool_ik(robot, target_pose, initial_conf)
+
+        if conf is None:
+            conf = get_joint_positions(robot, movable_joints)
         #if pairwise_collision(robot, robot):
-        conf = get_joint_positions(robot, movable_joints)
+
         if not collision_fn(conf):
             link_pose = get_link_pose(robot, link)
             error = get_distance(point_from_pose(target_pose), point_from_pose(link_pose))
+
             if error < best_error:  # TODO: error a function of direction as well
                 best_error, best_angle, best_conf = error, angle, conf
             # wait_for_interrupt()
-        if i != len(initial_angles)-1:
-            set_joint_positions(robot, movable_joints, initial_conf)
+
     #print(best_error, translation, direction, best_angle)
+
     if best_conf is not None:
         set_joint_positions(robot, movable_joints, best_conf)
         #wait_for_interrupt()
+
     return best_angle, best_conf
 
 
 def compute_direction_path(robot, length, reverse, element_body, direction, collision_fn):
+    """
+
+    :param robot:
+    :param length: element's length
+    :param reverse: True if element end id tuple needs to be reversed
+    :param element_body: the considered element's pybullet body
+    :param direction: a sampled Pose (v \in unit sphere)
+    :param collision_fn: collision checker (pybullet_tools.utils.get_collision_fn)
+    note that all the static objs + elements in the support set of the considered element
+    are accounted in the collision fn
+    :return: feasible PrintTrajectory if found, None otherwise
+    """
+
+    # meter
     step_size = 0.0025 # 0.005
+
     #angle_step_size = np.pi / 128
     angle_step_size = np.math.radians(0.25)
     angle_deltas = [-angle_step_size, 0, angle_step_size]
+
     #num_initial = 12
     num_initial = 1
 
@@ -224,12 +356,18 @@ def compute_direction_path(robot, length, reverse, element_body, direction, coll
     #initial_angles = [wrap_angle(angle) for angle in np.linspace(0, 2*np.pi, num_initial, endpoint=False)]
     initial_angles = [wrap_angle(angle) for angle in np.random.uniform(0, 2*np.pi, num_initial)]
     movable_joints = get_movable_joints(robot)
-    sample_fn = get_sample_fn(robot, movable_joints)
-    set_joint_positions(robot, movable_joints, sample_fn())
+
+    if USE_IKFAST is False:
+        # randomly sample and set joint conf for the pybullet ik fn
+        sample_fn = get_sample_fn(robot, movable_joints)
+        set_joint_positions(robot, movable_joints, sample_fn())
+
     link = link_from_name(robot, TOOL_NAME)
     element_pose = get_pose(element_body)
+    # the current_conf will be assigned to the pybullet env if it is non-empty
     current_angle, current_conf = optimize_angle(robot, link, element_pose,
                                                  steps[0], direction, reverse, initial_angles, collision_fn)
+
     if current_conf is None:
         return None
     # TODO: constrain maximum conf displacement
@@ -247,13 +385,26 @@ def compute_direction_path(robot, length, reverse, element_body, direction, coll
 
 
 def sample_print_path(robot, length, reverse, element_body, collision_fn):
+    """
+
+    :param robot:
+    :param length: the considered element's length
+    :param reverse: boolean, True if the element end id tuple needs to be reversed
+    :param element_body: the considered element's pybullet collision body
+    :param collision_fn: collision checker (pybullet_tools.utils.get_collision_fn)
+    note that all the static objs + elements in the support set of the considered element
+    are accounted in the collision fn
+    :return: feasible PrintTrajectory if found, None otherwise
+    """
     #max_directions = 10
     #max_directions = 16
     max_directions = 1
+
     #for direction in np.linspace(0, 2*np.pi, 10, endpoint=False):
     directions = [sample_direction() for _ in range(max_directions)]
     #directions = np.linspace(0, 2*np.pi, 10, endpoint=False)
     #directions = np.random.uniform(0, 2*np.pi, max_directions)
+
     for direction in directions:
         trajectory = compute_direction_path(robot, length, reverse, element_body, direction, collision_fn)
         if trajectory is not None:
@@ -263,16 +414,27 @@ def sample_print_path(robot, length, reverse, element_body, collision_fn):
 ##################################################
 
 def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes):
+    """
+
+    :param robot:
+    :param obstacles: static pybullet collision objs
+    :param node_points: a full list of node pts (x,y,z)
+    :param element_bodies: a full list of element tuple (end_u_id, end_v_id)
+    :param ground_nodes: a list of grounded nodes' ids
+    :return: a PrintTrajectory generation function.
+    """
     max_attempts = 150
-    max_trajectories = 10
+    max_trajectories = 10 # YJ: what does this max_traj mean?
     check_collisions = True
     # 50 doesn't seem to be enough
 
     movable_joints = get_movable_joints(robot)
     disabled_collisions = {tuple(link_from_name(robot, link) for link in pair) for pair in DISABLED_COLLISIONS}
+
     #element_neighbors = get_element_neighbors(element_bodies)
     node_neighbors = get_node_neighbors(element_bodies)
     incoming_supporters, _ = neighbors_from_orders(get_supported_orders(element_bodies, node_points))
+
     # TODO: print on full sphere and just check for collisions with the printed element
     # TODO: can slide a component of the element down
     # TODO: prioritize choices that don't collide with too many edges
@@ -289,15 +451,18 @@ def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes
         #supporters = {e for e in node_neighbors[n1] if element_supports(e, n1, node_points)}
         supporters = []
         retrace_supporters(element, incoming_supporters, supporters)
+
+        # only the elements in the support set are considered collision objects
         elements_order = [e for e in element_bodies if (e != element) and (e not in supporters)]
         bodies_order = [element_bodies[e] for e in elements_order]
         collision_fn = get_collision_fn(robot, movable_joints, obstacles + [element_bodies[e] for e in supporters],
-                                        attachments=[], self_collisions=True,
+                                        attachments=[], self_collisions=CHECK_SELF_COLLISION,
                                         disabled_collisions=disabled_collisions)
         trajectories = []
         for num in irange(max_trajectories):
             for attempt in range(max_attempts):
                 path = sample_print_path(robot, length, reverse, element_body, collision_fn)
+
                 if path is None:
                     continue
                 if check_collisions:
@@ -317,24 +482,42 @@ def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes
                 if not colliding:
                     return
             else:
-                print('{}) {}->{} ({}) | {} | Failure!'.format(num, len(supporters), n1, n2, max_attempts))
+                print('{}) {}->{} ({}) | {} | Failure!'.format(num, n1, n2, len(supporters), max_attempts))
                 break
     return gen_fn
 
 def get_wild_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes):
     gen_fn = get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes)
+
     def wild_gen_fn(node1, element, fluents=[]):
+        """
+        :param node1:
+        :param element:
+        :param fluents:
+        :return: trajectory:
+        collision info: ('Collision', traj, element)
+        """
         for t, in gen_fn(node1, element, fluents=fluents):
             outputs = [(t,)]
             facts = [('Collision', t, e2) for e2 in t.colliding]
             #outputs = []
             #facts.append(('PrintAction', node1, element, t))
             yield outputs, facts
+
     return wild_gen_fn
 
 ##################################################
 
 def sample_trajectories(robot, obstacles, node_points, element_bodies, ground_nodes):
+    """
+    Sample trajectories for extrusion of all the elements, ignoring the collision.
+    :param robot:
+    :param obstacles:
+    :param node_points:
+    :param element_bodies:
+    :param ground_nodes:
+    :return: A list (n x i_discrt) of PrintTrajectory for extrusion of all the elements.
+    """
     gen_fn = get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes)
     all_trajectories = []
     for index, (element, element_body) in enumerate(element_bodies.items()):
@@ -359,8 +542,18 @@ def sample_trajectories(robot, obstacles, node_points, element_bodies, ground_no
     return all_trajectories
 
 def compute_motions(robot, fixed_obstacles, element_bodies, initial_conf, trajectories):
+    """
+    Compute transition trajectories based on print trajectories.
+    :param robot:
+    :param fixed_obstacles:
+    :param element_bodies:
+    :param initial_conf:
+    :param trajectories: a list of PrintTrajectories.
+    :return: A full plan that consists of an alternating sequence of transition and print traj.
+    """
     # TODO: can just plan to initial and then shortcut
     # TODO: backoff motion
+    #   - (retraction?)
     # TODO: reoptimize for the sequence that have the smallest movements given this
     # TODO: sample trajectories
     # TODO: more appropriate distance based on displacement/volume
@@ -378,7 +571,7 @@ def compute_motions(robot, fixed_obstacles, element_bodies, initial_conf, trajec
         goal_conf = print_traj.path[0]
         obstacles = fixed_obstacles + [element_bodies[e] for e in printed_elements]
         path = plan_joint_motion(robot, movable_joints, goal_conf, obstacles=obstacles,
-                                 self_collisions=True, disabled_collisions=disabled_collisions,
+                                 self_collisions=CHECK_SELF_COLLISION, disabled_collisions=disabled_collisions,
                                  weights=weights, resolutions=resolutions,
                                  restarts=5, iterations=50, smooth=100)
         if path is None:
@@ -465,7 +658,7 @@ def debug_elements(robot, node_points, node_order, elements):
 
 ##################################################
 
-def main(viewer=False, precompute=False, motions=False):
+def main(viewer=False, precompute=False, motions=True):
     # TODO: setCollisionFilterGroupMask
     # TODO: fail if wild stream produces unexpected facts
     # TODO: try search at different cost levels (i.e. w/ and w/o abstract)
@@ -476,7 +669,8 @@ def main(viewer=False, precompute=False, motions=False):
     #return
 
     # djmm_test_block | mars_bubble | sig_artopt-bunny | topopt-100 | topopt-205 | topopt-310 | voronoi
-    elements, node_points, ground_nodes = load_extrusion('voronoi')
+    # simple_frame
+    elements, node_points, ground_nodes = load_extrusion('simple_frame')
 
     node_order = list(range(len(node_points)))
     #np.random.shuffle(node_order)
@@ -489,12 +683,16 @@ def main(viewer=False, precompute=False, motions=False):
     #plan = plan_sequence_test(node_points, elements, ground_nodes)
 
     connect(use_gui=viewer)
+    # connect(use_gui=True) # viewer
     floor, robot = load_world()
     obstacles = [floor]
-    initial_conf = get_joint_positions(robot, get_movable_joints(robot))
-    #dump_body(robot)
-    #if has_gui():
+    initial_conf = [0.08, -1.57, 1.74, 0.08, 0.17, -0.08]
+    set_joint_positions(robot, get_movable_joints(robot), initial_conf)
+
+    # dump_body(robot)
+    # if has_gui():
     #    draw_model(elements, node_points, ground_nodes)
+    #    print("frame model viz.")
     #    wait_for_interrupt('Continue?')
 
     #joint_weights = compute_joint_weights(robot, num=1000)
@@ -508,6 +706,7 @@ def main(viewer=False, precompute=False, motions=False):
         trajectories = sample_trajectories(robot, obstacles, node_points, element_bodies, ground_nodes)
         pr.disable()
         pstats.Stats(pr).sort_stats('tottime').print_stats(10)
+        print("init print traj done.")
         user_input('Continue?')
     else:
         trajectories = []
@@ -518,7 +717,6 @@ def main(viewer=False, precompute=False, motions=False):
     disconnect()
     display_trajectories(ground_nodes, plan)
     # TODO: collisions at the ends of elements?
-
 
 if __name__ == '__main__':
     main()

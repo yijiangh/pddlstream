@@ -260,7 +260,7 @@ def get_pddlstream(robot, brick_from_index, obstacle_from_name):
     ]
 
     # indices = brick_from_index.keys()
-    indices = range(2, 5)
+    indices = [4] #range(2, 5)
 
     for index in list(indices):
         indices.append(index+6)
