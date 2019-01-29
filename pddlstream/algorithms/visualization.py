@@ -1,12 +1,13 @@
 import os
 
 from pddlstream.algorithms.reorder import get_partial_orders
-from pddlstream.language.constants import EQ, get_prefix, get_args, NOT, MINIMIZE
+from pddlstream.language.constants import EQ, get_prefix, get_args, str_from_plan, is_parameter, \
+    partition_facts
 from pddlstream.language.conversion import str_from_fact, evaluation_from_fact
 from pddlstream.language.function import FunctionResult
 from pddlstream.language.object import OptimisticObject
 from pddlstream.language.synthesizer import SynthStreamResult, decompose_stream_plan
-from pddlstream.utils import clear_dir, ensure_dir, str_from_plan
+from pddlstream.utils import clear_dir, ensure_dir
 
 # https://www.graphviz.org/doc/info/
 
@@ -99,31 +100,13 @@ def visualize_constraints(constraints, filename='constraint_network.pdf', use_fu
     graph.graph_attr['outputMode'] = 'nodesfirst'
     graph.graph_attr['dpi'] = 300
 
-    functions = set()
-    negated = set()
-    heads = set()
-    for fact in constraints:
-        prefix = get_prefix(fact)
-        if prefix in (EQ, MINIMIZE):
-            functions.add(fact[1])
-        elif prefix == NOT:
-            negated.add(fact[1])
-        else:
-            heads.add(fact)
-    heads.update(functions)
-    heads.update(negated)
-
-    objects = {a for head in heads for a in get_args(head)}
-    optimistic_objects = filter(lambda o: isinstance(o, OptimisticObject), objects)
-    for opt_obj in optimistic_objects:
-        graph.add_node(str(opt_obj), shape='circle', color=PARAMETER_COLOR)
-
-    for head in heads:
-        if not use_functions and (head in functions):
-            continue
+    positive, negated, functions = partition_facts(constraints)
+    for head in positive + negated + functions:
         # TODO: prune values w/o free parameters?
         name = str_from_fact(head)
         if head in functions:
+            if not use_functions:
+                continue
             color = COST_COLOR
         elif head in negated:
             color = NEGATED_COLOR
@@ -131,8 +114,10 @@ def visualize_constraints(constraints, filename='constraint_network.pdf', use_fu
             color = CONSTRAINT_COLOR
         graph.add_node(name, shape='box', color=color)
         for arg in get_args(head):
-            if arg in optimistic_objects:
-                graph.add_edge(name, str(arg))
+            if isinstance(arg, OptimisticObject) or is_parameter(arg):
+                arg_name = str(arg)
+                graph.add_node(arg_name, shape='circle', color=PARAMETER_COLOR)
+                graph.add_edge(name, arg_name)
     graph.draw(filename, prog='dot') # neato | dot | twopi | circo | fdp | nop
     return graph
 
@@ -179,6 +164,7 @@ def visualize_stream_plan_bipartite(stream_plan, filename='stream_plan.pdf', use
     graph.graph_attr['ranksep'] = 0.25
     graph.graph_attr['outputMode'] = 'nodesfirst'
     graph.graph_attr['dpi'] = 300
+    # TODO: store these settings as a dictionary
 
     def add_fact(fact):
         head, color = (fact[1], COST_COLOR) if get_prefix(fact) == EQ else (fact, CONSTRAINT_COLOR)

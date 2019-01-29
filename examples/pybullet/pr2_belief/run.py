@@ -13,8 +13,8 @@ import pstats
 from pddlstream.algorithms.focused import solve_focused
 from pddlstream.algorithms.search import ABSTRIPSLayer
 from pddlstream.language.generator import from_gen_fn, from_list_fn, from_fn, from_test, accelerate_list_gen_fn
-from pddlstream.utils import print_solution, read, get_file_path
-from pddlstream.language.constants import PDDLProblem, And, Equal
+from pddlstream.utils import read, get_file_path
+from pddlstream.language.constants import PDDLProblem, And, Equal, print_solution
 from pddlstream.language.stream import StreamInfo
 
 from examples.pybullet.pr2_belief.primitives import Scan, ScanRoom, Detect, Register, \
@@ -241,7 +241,7 @@ def plan_commands(state, teleport=False, profile=False, verbose=True):
     pr = cProfile.Profile()
     pr.enable()
     solution = solve_focused(pddlstream_problem, stream_info=stream_info, hierarchy=hierarchy, debug=False,
-                             max_cost=MAX_COST, verbose=verbose)
+                             success_cost=MAX_COST, verbose=verbose)
     pr.disable()
     plan, cost, evaluations = solution
     if MAX_COST <= cost:

@@ -1,11 +1,14 @@
 from pddlstream.algorithms.downward import get_problem, task_from_domain_problem, sas_from_pddl
 from pddlstream.algorithms.scheduling.recover_streams import get_achieving_streams, extract_stream_plan
-from pddlstream.algorithms.scheduling.simultaneous import get_stream_actions
+from pddlstream.algorithms.scheduling.stream_action import get_stream_actions
 from pddlstream.algorithms.search import solve_from_task
 from pddlstream.language.constants import And
 from pddlstream.language.conversion import evaluation_from_fact
 from pddlstream.utils import flatten
 
+# TODO: rename this to plan streams?
+
+DO_RESCHEDULE = False
 #RESCHEDULE_PLANNER = 'ff-astar'
 RESCHEDULE_PLANNER = 'lmcut-astar'
 #RESCHEDULE_PLANNER = 'ff-lazy'
@@ -59,4 +62,16 @@ def prune_stream_plan(evaluations, stream_plan, target_facts):
         if new_stream_plan is None:
             break
         stream_plan = new_stream_plan
+    return stream_plan
+
+##################################################
+
+def postprocess_stream_plan(evaluations, domain, stream_plan, target_facts):
+    stream_plan = prune_stream_plan(evaluations, stream_plan, target_facts)
+    if DO_RESCHEDULE:
+        # TODO: detect this based on unique or not
+        # TODO: maybe test if partial order between two ways of achieving facts, if not prune
+        new_stream_plan = reschedule_stream_plan(evaluations, target_facts, domain, stream_plan)
+        if new_stream_plan is not None:
+            return new_stream_plan
     return stream_plan

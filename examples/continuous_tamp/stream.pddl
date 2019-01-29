@@ -1,4 +1,4 @@
-(define (stream pick-and-place)
+(define (stream continuous-tamp)
   (:stream s-region
     :inputs (?b ?r)
     ;:domain (and (Block ?b) (Region ?r))
@@ -30,9 +30,9 @@
   ;(:function (Length ?t)
   ;   (Traj ?t))
 
-  ;(:predicate (PoseCollision ?b1 ?p1 ?b2 ?p2)
-  ;  (and (Pose ?b1 ?p1) (Pose ?b2 ?p2))
-  ;)
+  (:predicate (PoseCollision ?b1 ?p1 ?b2 ?p2)
+    (and (Pose ?b1 ?p1) (Pose ?b2 ?p2))
+  )
   ;(:predicate (TrajCollision ?t ?b2 ?p2)
   ;  (and (Traj ?t) (Pose ?b2 ?p2))
   ;)

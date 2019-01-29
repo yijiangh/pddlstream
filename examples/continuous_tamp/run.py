@@ -2,33 +2,31 @@
 
 from __future__ import print_function
 
-import cProfile
-import pstats
-import os
-import numpy as np
 import argparse
+import cProfile
+import os
+import pstats
 
-from pddlstream.algorithms.downward import TOTAL_COST
-from pddlstream.algorithms.focused import solve_focused
-from pddlstream.utils import clear_dir, ensure_dir
+import numpy as np
 
 from examples.continuous_tamp.constraint_solver import cfree_motion_fn, get_optimize_fn, has_gurobi
-from examples.continuous_tamp.primitives import get_pose_gen, collision_test, \
+from examples.continuous_tamp.primitives import get_pose_gen, collision_test, unreliable_ik_fn, \
     distance_fn, inverse_kin_fn, get_region_test, plan_motion, PROBLEMS, \
-    draw_state, get_random_seed, TAMPState, GROUND_NAME, SUCTION_HEIGHT
-
+    draw_state, get_random_seed, TAMPState, GROUND_NAME, SUCTION_HEIGHT, MOVE_COST
+from pddlstream.algorithms.focused import solve_focused
 from pddlstream.algorithms.incremental import solve_incremental
-from pddlstream.algorithms.search import ABSTRIPSLayer
 from pddlstream.algorithms.visualization import VISUALIZATIONS_DIR
-from pddlstream.language.constants import And, Equal, PDDLProblem
+from pddlstream.algorithms.constraints import PlanConstraints, WILD
+from pddlstream.language.constants import And, Equal, PDDLProblem, TOTAL_COST, print_solution
 from pddlstream.language.generator import from_gen_fn, from_fn, from_test
-from pddlstream.language.synthesizer import StreamSynthesizer
-from pddlstream.language.stream import StreamInfo
 from pddlstream.language.function import FunctionInfo
-from pddlstream.language.optimizer import OptimizerInfo
-from pddlstream.utils import print_solution, user_input, read, INF, get_file_path, str_from_object
+from pddlstream.language.stream import StreamInfo
+from pddlstream.language.synthesizer import StreamSynthesizer
+from pddlstream.utils import ensure_dir
+from pddlstream.utils import user_input, read, INF, get_file_path, str_from_object, implies
 
-def pddlstream_from_tamp(tamp_problem, use_stream=True, use_optimizer=False):
+
+def pddlstream_from_tamp(tamp_problem, use_stream=True, use_optimizer=False, collisions=True):
     initial = tamp_problem.initial
     assert(initial.holding is None)
 
@@ -37,7 +35,7 @@ def pddlstream_from_tamp(tamp_problem, use_stream=True, use_optimizer=False):
     if use_stream:
         external_paths.append(get_file_path(__file__, 'stream.pddl'))
     if use_optimizer:
-        external_paths.append(get_file_path(__file__, 'optimizer.pddl'))
+        external_paths.append(get_file_path(__file__, 'optimizer2.pddl')) # optimizer1 | optimizer2
     external_pddl = [read(path) for path in external_paths]
 
     constant_map = {}
@@ -66,10 +64,11 @@ def pddlstream_from_tamp(tamp_problem, use_stream=True, use_optimizer=False):
         's-region': from_gen_fn(get_pose_gen(tamp_problem.regions)),
         't-region': from_test(get_region_test(tamp_problem.regions)),
         's-ik': from_fn(inverse_kin_fn),
+        #'s-ik': from_gen_fn(unreliable_ik_fn),
         'distance': distance_fn,
 
-        't-cfree': from_test(lambda *args: not collision_test(*args)),
-        'posecollision': collision_test, # Redundant
+        't-cfree': from_test(lambda *args: implies(collisions, not collision_test(*args))),
+        #'posecollision': collision_test, # Redundant
         'trajcollision': lambda *args: False,
     }
     if use_optimizer:
@@ -134,14 +133,19 @@ def display_plan(tamp_problem, plan, display=True):
         user_input('Finish?')
 
 
-def main(unit_costs=False, use_synthesizers=False):
+def main(use_synthesizers=False):
     parser = argparse.ArgumentParser()
     parser.add_argument('-p', '--problem', default='blocked', help='The name of the problem to solve')
-    parser.add_argument('-d', '--deterministic', action='store_true', help='Uses a deterministic sampler')
     parser.add_argument('-a', '--algorithm', default='focused', help='Specifies the algorithm')
+    parser.add_argument('-c', '--cfree', action='store_true', help='Disables collisions')
+    parser.add_argument('-d', '--deterministic', action='store_true', help='Uses a deterministic sampler')
+    parser.add_argument('-u', '--unit', action='store_true', help='Uses unit costs')
+    parser.add_argument('-o', '--optimal', action='store_true', help='Runs in an anytime mode')
+    parser.add_argument('-s', '--skeleton', action='store_true', help='Enforces skeleton plan constraints')
+    parser.add_argument('-t', '--max_time', default=20, type=int, help='The max time')
     args = parser.parse_args()
     print('Arguments:', args)
-    print('Costs: {} | Synthesizers: {}'.format(not unit_costs, use_synthesizers))
+    print('Synthesizers: {}'.format(use_synthesizers))
 
     np.set_printoptions(precision=2)
     if args.deterministic:
@@ -167,7 +171,7 @@ def main(unit_costs=False, use_synthesizers=False):
     stream_info = {
         't-region': StreamInfo(eager=True, p_success=0), # bound_fn is None
         't-cfree': StreamInfo(eager=False, negate=True),
-        #'distance': FunctionInfo(opt_fn=lambda *args: 1),
+        'distance': FunctionInfo(opt_fn=lambda q1, q2: MOVE_COST),
         #'gurobi': OptimizerInfo(p_success=0),
         #'rrt': OptimizerInfo(p_success=0),
     }
@@ -183,20 +187,47 @@ def main(unit_costs=False, use_synthesizers=False):
                           gen_fn=from_fn(get_optimize_fn(tamp_problem.regions))),
     ] if use_synthesizers else []
 
-    pddlstream_problem = pddlstream_from_tamp(tamp_problem)
+
+    skeleton = [
+        ('move', ['?q0', WILD, '?q1']),
+        ('pick', ['b1', '?p0', '?q1']),
+        ('move', ['?q1', WILD, '?q2']),
+        ('place', ['b1', '?p1', '?q2']),
+
+        ('move', ['?q2', WILD, '?q3']),
+        ('pick', ['b0', '?p2', '?q3']),
+        ('move', ['?q3', WILD, '?q4']),
+        ('place', ['b0', '?p3', '?q4']),
+    ]
+    skeletons = [skeleton] if args.skeleton else None
+    max_cost = INF # 8*MOVE_COST
+    constraints = PlanConstraints(skeletons=skeletons,
+                                  #skeletons=[],
+                                  #skeletons=[skeleton, []],
+                                  exact=True,
+                                  max_cost=max_cost)
+
+    pddlstream_problem = pddlstream_from_tamp(tamp_problem, collisions=not args.cfree, use_optimizer=True)
     print('Initial:', str_from_object(pddlstream_problem.init))
     print('Goal:', str_from_object(pddlstream_problem.goal))
     pr = cProfile.Profile()
     pr.enable()
+    success_cost = 0 if args.optimal else INF
     if args.algorithm == 'focused':
-        solution = solve_focused(pddlstream_problem, action_info=action_info, stream_info=stream_info,
-                                 planner='ff-wastar1', max_planner_time=10, synthesizers=synthesizers, verbose=True,
-                                 max_time=300, max_cost=INF, debug=False, hierarchy=hierarchy,
-                                 effort_weight=1, search_sampling_ratio=0, # TODO: run with search_sampling_ratio=1
-                                 unit_costs=unit_costs, postprocess=False, visualize=False)
+        solution = solve_focused(pddlstream_problem, constraints=constraints,
+                                 action_info=action_info, stream_info=stream_info, synthesizers=synthesizers,
+                                 planner='ff-wastar1', max_planner_time=10, hierarchy=hierarchy, debug=False,
+                                 max_time=args.max_time, max_iterations=INF, verbose=True,
+                                 unit_costs=args.unit, success_cost=success_cost,
+                                 unit_efforts=False, effort_weight=0,
+                                 #search_sample_ratio=1,
+                                 #max_skeletons=None,
+                                 visualize=False)
     elif args.algorithm == 'incremental':
-        solution = solve_incremental(pddlstream_problem, layers=1, hierarchy=hierarchy,
-                                     unit_costs=unit_costs, verbose=False)
+        solution = solve_incremental(pddlstream_problem, constraints=constraints,
+                                     complexity_step=2, hierarchy=hierarchy,
+                                     unit_costs=args.unit, success_cost=success_cost,
+                                     max_time=args.max_time, verbose=False)
     else:
         raise ValueError(args.algorithm)
 

@@ -12,7 +12,8 @@ from numpy import array
 from examples.continuous_tamp.primitives import get_random_seed, get_tight_problem
 from examples.continuous_tamp.run import pddlstream_from_tamp
 from pddlstream.language.stream import StreamInfo
-from pddlstream.algorithms.satisfaction import dump_assignment, solve_pddlstream_satisfaction, constraint_satisfaction
+from pddlstream.language.constants import Not, Minimize
+from pddlstream.algorithms.satisfaction import dump_assignment, solve_pddlstream_satisfaction
 
 # Be careful about uniqueness here
 CONF0 = array([-7.5, 5.])
@@ -21,17 +22,11 @@ POSE1 = array([-3, 0])
 
 INIT = [
     # TODO: use problem.init instead
-    #('=', ('total-cost',), 0),
-    #('atconf', conf0),
-    #('atpose', 'b0', pose0),
-    #('atpose', 'b1', pose1),
     ('block', 'b0'),
     ('block', 'b1'),
-    #('canmove',),
     ('conf', CONF0),
     ('contained', 'b0', POSE0, 'grey'),
     ('contained', 'b1', POSE1, 'grey'),
-    #('handempty',),
     ('placeable', 'b0', 'grey'),
     ('placeable', 'b0', 'red'),
     ('placeable', 'b1', 'grey'),
@@ -42,6 +37,7 @@ INIT = [
     ('region', 'red'),
 ]
 
+# TODO: predicate (Not) constraints as well
 CONSTRAINTS = [
     ('cfree', 'b0', '?p0', 'b1', POSE1),
     ('cfree', 'b1', '?p1', 'b0', '?p0'),
@@ -67,12 +63,17 @@ CONSTRAINTS = [
     ('traj', '?t3'),
 ]
 
+OBJECTIVES = [
+    Minimize(('distance', CONF0, '?q0')),
+    Minimize(('distance', '?q0', '?q1')),
+    Minimize(('distance', '?q1', '?q3')),
+    Minimize(('distance', '?q3', '?q2')),
+]
 
-# TODO: plan skeleton suggestion of what to do
-
-def main():
+def main(success_cost=0, max_time=30):
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--deterministic', action='store_true', help='Uses a deterministic sampler')
+    parser.add_argument('-a', '--algorithm', default='focused', help='Specifies the algorithm')
     parser.add_argument('-o', '--optimizer', action='store_true', help='Uses the optimizers')
     args = parser.parse_args()
     print('Arguments:', args)
@@ -82,7 +83,7 @@ def main():
         seed = 0
         np.random.seed(seed)
     print('Random seed:', get_random_seed())
-    tamp_problem = get_tight_problem()
+    tamp_problem = get_tight_problem(n_blocks=2, n_goals=2)
     print(tamp_problem)
 
     pddlstream_problem = pddlstream_from_tamp(tamp_problem, use_stream=not args.optimizer,
@@ -90,14 +91,24 @@ def main():
     stream_pddl, stream_map = pddlstream_problem[2:4]
     stream_info = {
         't-region': StreamInfo(eager=True, p_success=0), # bound_fn is None
-        't-cfree': StreamInfo(eager=False, negate=True),
+        #'t-cfree': StreamInfo(eager=False, negate=True),
     }
 
+    terms = CONSTRAINTS + OBJECTIVES
     pr = cProfile.Profile()
     pr.enable()
-    #solution = constraint_satisfaction(stream_pddl, stream_map, INIT, CONSTRAINTS)
-    solution = solve_pddlstream_satisfaction(stream_pddl, stream_map, INIT, CONSTRAINTS,
-                                             stream_info=stream_info)
+    if args.algorithm == 'focused':
+        solution = solve_pddlstream_satisfaction(stream_pddl, stream_map, INIT, terms,
+                                                 incremental=False, stream_info=stream_info,
+                                                 #search_sample_ratio=1,
+                                                 max_skeletons=1,
+                                                 success_cost=success_cost, max_time=max_time)
+    elif args.algorithm == 'incremental':
+        solution = solve_pddlstream_satisfaction(stream_pddl, stream_map, INIT, terms, incremental=True,
+                                                 success_cost=success_cost, max_time=max_time, verbose=False)
+    else:
+        raise ValueError(args.algorithm)
+
     dump_assignment(solution)
     pr.disable()
     pstats.Stats(pr).sort_stats('tottime').print_stats(10)

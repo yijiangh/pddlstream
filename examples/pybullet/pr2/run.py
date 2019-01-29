@@ -4,7 +4,6 @@ from __future__ import print_function
 
 import cProfile
 import pstats
-import math
 import argparse
 
 from examples.pybullet.utils.pybullet_tools.pr2_primitives import Pose, Conf, get_ik_ir_gen, get_motion_gen, \
@@ -16,8 +15,8 @@ from examples.pybullet.utils.pybullet_tools.utils import connect, get_pose, is_p
 from pddlstream.algorithms.focused import solve_focused
 from pddlstream.language.generator import from_gen_fn, from_list_fn, from_fn, fn_from_constant, empty_gen
 from pddlstream.language.synthesizer import StreamSynthesizer
-from pddlstream.language.constants import Equal, AND
-from pddlstream.utils import print_solution, read, INF, get_file_path, find_unique
+from pddlstream.language.constants import Equal, AND, print_solution
+from pddlstream.utils import read, INF, get_file_path, find_unique
 from pddlstream.language.function import FunctionInfo
 from pddlstream.language.stream import StreamInfo, PartialInputs
 
@@ -25,14 +24,6 @@ from pddlstream.language.stream import StreamInfo, PartialInputs
 USE_SYNTHESIZERS = False
 BASE_CONSTANT = 1
 BASE_VELOCITY = 0.5
-SCALE_COST = 1000
-
-def scale_cost(cost):
-    """
-    Unfortunately, FastDownward only supports nonnegative, integer functions
-    This function scales all costs, so decimals can be factored into the cost
-    """
-    return int(math.ceil(SCALE_COST * cost))
 
 def place_movable(certified):
     for literal in certified:
@@ -62,8 +53,7 @@ def get_base_motion_synth(problem, teleport=False):
 
 def move_cost_fn(t):
     distance = t.distance(distance_fn=lambda q1, q2: get_distance(q1[:2], q2[:2]))
-    cost = BASE_CONSTANT + distance / BASE_VELOCITY
-    return scale_cost(cost)
+    return BASE_CONSTANT + distance / BASE_VELOCITY
 
 #######################################################
 
@@ -83,8 +73,7 @@ def extract_point2d(v):
 def opt_move_cost_fn(t):
     q1, q2 = t.values
     distance = get_distance(extract_point2d(q1), extract_point2d(q2))
-    cost = BASE_CONSTANT + distance / BASE_VELOCITY
-    return scale_cost(cost)
+    return BASE_CONSTANT + distance / BASE_VELOCITY
 
 #######################################################
 
@@ -101,8 +90,8 @@ def pddlstream_from_problem(problem, teleport=False):
         ('CanMove',),
         ('BConf', initial_bq),
         ('AtBConf', initial_bq),
-        Equal(('PickCost',), scale_cost(1)),
-        Equal(('PlaceCost',), scale_cost(1)),
+        Equal(('PickCost',), 1),
+        Equal(('PlaceCost',), 1),
     ] + [('Sink', s) for s in problem.sinks] + \
            [('Stove', s) for s in problem.stoves] + \
            [('Connected', b, d) for b, d in problem.buttons] + \
@@ -232,10 +221,9 @@ def main(display=True, simulate=False, teleport=False):
     pr = cProfile.Profile()
     pr.enable()
     solution = solve_focused(pddlstream_problem, stream_info=stream_info,
-                             synthesizers=synthesizers, max_cost=INF)
+                             synthesizers=synthesizers, success_cost=INF)
     print_solution(solution)
     plan, cost, evaluations = solution
-    print('Real cost:', float(cost)/SCALE_COST)
     pr.disable()
     pstats.Stats(pr).sort_stats('tottime').print_stats(10)
     if plan is None:

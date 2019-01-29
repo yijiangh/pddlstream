@@ -15,7 +15,8 @@ from examples.continuous_tamp.viewer import ContinuousTMPViewer, GROUND_NAME
 from examples.discrete_tamp.viewer import COLORS
 from pddlstream.algorithms.incremental import solve_incremental
 from pddlstream.language.generator import from_gen_fn, from_fn, from_test
-from pddlstream.utils import print_solution, user_input, read, INF, get_file_path
+from pddlstream.utils import user_input, read, INF, get_file_path
+from pddlstream.language.constants import print_solution
 
 R = 'r'
 H = 'h'
@@ -145,12 +146,12 @@ def main(focused=False, deterministic=False, unit_costs=True):
     pr.enable()
     if focused:
         solution = solve_focused(pddlstream_problem, stream_info=stream_info,
-                                 max_time=10, max_cost=INF, debug=False,
-                                 effort_weight=None, unit_costs=unit_costs, postprocess=False,
+                                 max_time=10, success_cost=INF, debug=False,
+                                 effort_weight=None, unit_costs=unit_costs,
                                  visualize=False)
     else:
-        solution = solve_incremental(pddlstream_problem,
-                                     layers=1, unit_costs=unit_costs, verbose=False)
+        solution = solve_incremental(pddlstream_problem, complexity_step=1,
+                                     unit_costs=unit_costs, verbose=False)
     print_solution(solution)
     plan, cost, evaluations = solution
     pr.disable()

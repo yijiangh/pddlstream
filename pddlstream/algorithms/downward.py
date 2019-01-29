@@ -6,20 +6,23 @@ import sys
 from collections import namedtuple
 from time import time
 
-from pddlstream.language.constants import EQ, NOT, Head, Evaluation, get_prefix, get_args
+from pddlstream.language.constants import EQ, NOT, Head, Evaluation, get_prefix, get_args, OBJECT, TOTAL_COST
 from pddlstream.language.conversion import is_atom, is_negated_atom, objects_from_evaluations, pddl_from_object, \
     pddl_list_from_expression, obj_from_pddl
 from pddlstream.utils import read, write, INF, Verbose, clear_dir, get_file_path, MockSet, find_unique, int_ceil
 
-# TODO: possible bug when path has a space or period
+filepath = os.path.abspath(__file__)
+if ' ' in filepath:
+    raise RuntimeError('The path to pddlstream cannot include spaces')
 FD_PATH = None
-for release in ['release64', 'release32']:
+for release in ['release64', 'release32']: # TODO: list the directory
     path = get_file_path(__file__, '../../FastDownward/builds/{}/'.format(release))
     if os.path.exists(path):
         FD_PATH = path
         break
 if FD_PATH is None:
-    raise RuntimeError('.../pddlstream$ ./FastDownward/build.py')
+    # TODO: could also just automatically compile
+    raise RuntimeError('Please compile FastDownward first [.../pddlstream$ ./FastDownward/build.py]')
 FD_BIN = os.path.join(FD_PATH, 'bin')
 TRANSLATE_PATH = os.path.join(FD_BIN, 'translate')
 
@@ -45,14 +48,15 @@ sys.argv = original_argv
 TEMP_DIR = 'temp/'
 TRANSLATE_OUTPUT = 'output.sas'
 SEARCH_OUTPUT = 'sas_plan'
-SEARCH_COMMAND = 'downward --internal-plan-file %s %s < %s'
+SEARCH_COMMAND = 'downward --internal-plan-file {} {} < {}'
+INFINITY = 'infinity'
+GOAL_NAME = '@goal' # @goal-reachable
 
 # TODO: be careful when doing costs. Might not be admissible if use plus one for heuristic
 # TODO: modify parsing_functions to support multiple costs
 
-OBJECT = 'object'
-TOTAL_COST = 'total-cost' # TotalCost
-INFINITY = 'infinity'
+# bound (int): exclusive depth bound on g-values. Cutoffs are always performed according to the real cost.
+# (i.e. solutions must be strictly better than the bound)
 
 SEARCH_OPTIONS = {
     # Optimal
@@ -138,6 +142,12 @@ def parse_domain(domain_pddl):
     #        action.cost.expression.value = scale_cost(action.cost.expression.value)
     return domain
 
+def has_costs(domain):
+    for action in domain.actions:
+        if action.cost is not None:
+            return True
+    return False
+
 Problem = namedtuple('Problem', ['task_name', 'task_domain_name', 'task_requirements',
                                  'objects', 'init', 'goal', 'use_metric'])
 
@@ -153,11 +163,7 @@ def parse_problem(domain, problem_pddl):
 #              ':effect', []]
 #    parse_action(action)
 #    pddl_parser.parsing_functions.parse_action(lisp_list, [], {})
-#    return
-#
-#def create_action(lisp_list):
-#    raise NotImplementedError()
-#    #return pddl.Action
+#    return pddl.Action
 
 ##################################################
 
@@ -168,13 +174,13 @@ def fd_from_fact(fact):
     prefix = get_prefix(fact)
     if prefix == NOT:
         return fd_from_fact(fact[1]).negate()
-    if prefix == EQ:
-        _, head, value = fact
-        predicate = get_prefix(head)
-        args = list(map(pddl_from_object, get_args(head)))
-        fluent = pddl.f_expression.PrimitiveNumericExpression(symbol=predicate, args=args)
-        expression = pddl.f_expression.NumericConstant(value)
-        return pddl.f_expression.Assign(fluent, expression)
+    #if prefix == EQ:
+    #    _, head, value = fact
+    #    predicate = get_prefix(head)
+    #    args = list(map(pddl_from_object, get_args(head)))
+    #    fluent = pddl.f_expression.PrimitiveNumericExpression(symbol=predicate, args=args)
+    #    expression = pddl.f_expression.NumericConstant(value)
+    #    return pddl.f_expression.Assign(fluent, expression)
     args = list(map(pddl_from_object, get_args(fact)))
     return pddl.Atom(prefix, args)
 
@@ -213,7 +219,7 @@ def parse_goal(goal_expression, domain):
     return parse_condition(pddl_list_from_expression(goal_expression),
                            domain.type_dict, domain.predicate_dict).simplified()
 
-def get_problem(init_evaluations, goal_expression, domain, unit_costs):
+def get_problem(init_evaluations, goal_expression, domain, unit_costs=False):
     objects = objects_from_evaluations(init_evaluations)
     typed_objects = list({pddl.TypedObject(pddl_from_object(obj), OBJECT) for obj in objects} - set(domain.constants))
     # TODO: this doesn't include =
@@ -244,6 +250,15 @@ def task_from_domain_problem(domain, problem):
     return task
 
 ##################################################
+
+def get_fluents(domain):
+    fluent_predicates = set()
+    for action in domain.actions:
+        for effect in action.effects:
+            fluent_predicates.add(effect.literal.predicate)
+    for axiom in domain.axioms:
+        fluent_predicates.add(axiom.name)
+    return fluent_predicates
 
 def get_literals(condition):
     if isinstance(condition, pddl.Truth):
@@ -289,13 +304,18 @@ def translate_and_write_pddl(domain_pddl, problem_pddl, temp_dir, verbose):
 
 ##################################################
 
+def convert_cost(cost):
+    if cost == INF:
+        return INFINITY
+    return int(cost)
+
 def run_search(temp_dir, planner=DEFAULT_PLANNER, max_planner_time=DEFAULT_MAX_TIME, max_cost=INF, debug=False):
-    max_time = INFINITY if max_planner_time == INF else int(max_planner_time)
+    max_time = convert_cost(max_planner_time)
     max_cost = INFINITY if max_cost == INF else scale_cost(max_cost)
     start_time = time()
     search = os.path.join(FD_BIN, SEARCH_COMMAND)
     planner_config = SEARCH_OPTIONS[planner] % (max_time, max_cost)
-    command = search % (temp_dir + SEARCH_OUTPUT, planner_config, temp_dir + TRANSLATE_OUTPUT)
+    command = search.format(temp_dir + SEARCH_OUTPUT, planner_config, temp_dir + TRANSLATE_OUTPUT)
     if debug:
         print('Search command:', command)
     p = os.popen(command)  # NOTE - cannot pipe input easily with subprocess
@@ -309,6 +329,12 @@ def run_search(temp_dir, planner=DEFAULT_PLANNER, max_planner_time=DEFAULT_MAX_T
 
 ##################################################
 
+def parse_action(line):
+    entries = line.strip('( )').split(' ')
+    name = entries[0]
+    args = tuple(entries[1:])
+    return (name, args)
+
 def parse_solution(solution):
     #action_regex = r'\((\w+(\s+\w+)\)' # TODO: regex
     cost = INF
@@ -320,12 +346,8 @@ def parse_solution(solution):
         cost = float(matches[0]) / get_cost_scale()
     # TODO: recover the actual cost of the plan from the evaluations
     lines = solution.split('\n')[:-2]  # Last line is newline, second to last is cost
-    plan = []
-    for line in lines:
-        entries = line.strip('( )').split(' ')
-        plan.append((entries[0], tuple(entries[1:])))
+    plan = list(map(parse_action, lines))
     return plan, cost
-
 
 def write_pddl(domain_pddl=None, problem_pddl=None, temp_dir=TEMP_DIR):
     clear_dir(temp_dir)
@@ -339,8 +361,12 @@ def write_pddl(domain_pddl=None, problem_pddl=None, temp_dir=TEMP_DIR):
 
 ##################################################
 
+def literal_holds(state, literal):
+    #return (literal in state) != literal.negated
+    return (literal.positive() in state) != literal.negated
+
 def conditions_hold(state, conditions):
-    return all((cond in state) != cond.negated for cond in conditions)
+    return all(literal_holds(state, cond) for cond in conditions)
 
 def is_applicable(state, action):
     if isinstance(action, pddl.PropositionalAction):
@@ -383,7 +409,7 @@ def plan_cost(plan):
     return cost
 
 def substitute_derived(axiom_plan, action_instance):
-    # TODO: what the propositional axiom has conditional derived
+    # TODO: what if the propositional axiom has conditional derived
     axiom_pre = {p for ax in axiom_plan for p in ax.condition}
     axiom_eff = {ax.effect for ax in axiom_plan}
     action_instance.precondition = list((set(action_instance.precondition) | axiom_pre) - axiom_eff)
@@ -413,11 +439,7 @@ def get_action_instances(task, action_plan):
 
 
 def get_goal_instance(goal):
-    #name = '@goal-reachable'
-    name = '@goal'
-    precondition =  goal.parts if isinstance(goal, pddl.Conjunction) else [goal]
-    #precondition = get_literals(goal)
-    return pddl.PropositionalAction(name, precondition, [], None)
+    return pddl.PropositionalAction(GOAL_NAME, instantiate_goal(goal), [], None)
 
 ##################################################
 
@@ -467,8 +489,20 @@ def plan_preimage(combined_plan, goal):
 
 ##################################################
 
-def make_parameters(parameters, type=OBJECT):
-    return tuple(pddl.TypedObject(p, type) for p in parameters)
+def add_predicate(domain, predicate):
+    if predicate.name in domain.predicate_dict:
+        return False
+    domain.predicates.append(predicate)
+    domain.predicate_dict[predicate.name] = predicate
+    return True
+
+
+def make_object(obj, type=OBJECT):
+    return pddl.TypedObject(obj, type)
+
+
+def make_parameters(parameters, **kwargs):
+    return tuple(make_object(p, **kwargs) for p in parameters)
 
 
 def make_predicate(name, parameters):
@@ -483,16 +517,20 @@ def make_effects(effects):
     return [pddl.Effect(parameters=[], condition=pddl.Truth(),
                         literal=fd_from_fact(fact)) for fact in effects]
 
-
 def make_cost(cost):
     if cost is None:
         return cost
     fluent = pddl.PrimitiveNumericExpression(symbol=TOTAL_COST, args=[])
-    expression = pddl.NumericConstant(cost)
+    try:
+        expression = pddl.NumericConstant(cost)
+    except TypeError:
+        expression = pddl.PrimitiveNumericExpression(
+            symbol=get_prefix(cost), args=list(map(pddl_from_object, get_args(cost))))
     return pddl.Increase(fluent=fluent, expression=expression)
 
 
 def make_action(name, parameters, preconditions, effects, cost=None):
+    # Usually all parameters are external
     return pddl.Action(name=name,
                        parameters=make_parameters(parameters),
                        num_external_parameters=len(parameters),
@@ -503,14 +541,13 @@ def make_action(name, parameters, preconditions, effects, cost=None):
 
 def make_axiom(parameters, preconditions, derived):
     predicate = get_prefix(derived)
-    external_parameters = get_args(derived)
+    external_parameters = list(get_args(derived))
     internal_parameters = [p for p in parameters if p not in external_parameters]
     parameters = external_parameters + internal_parameters
     return pddl.Axiom(name=predicate,
                       parameters=make_parameters(parameters),
                       num_external_parameters=len(external_parameters),
                       condition=make_preconditions(preconditions))
-
 
 
 def make_domain(constants=[], predicates=[], functions=[], actions=[], axioms=[]):
@@ -527,20 +564,23 @@ def make_domain(constants=[], predicates=[], functions=[], actions=[], axioms=[]
 InstantiatedTask = namedtuple('InstantiatedTask', ['task', 'atoms', 'actions', 'axioms',
                                                    'reachable_action_params', 'goal_list'])
 
+def instantiate_goal(goal):
+    # HACK! Goals should be treated differently.
+    if isinstance(goal, pddl.Conjunction):
+        goal_list = goal.parts
+    else:
+        goal_list = [goal]
+    for item in goal_list:
+        assert isinstance(item, pddl.Literal)
+    return goal_list
+
 def instantiate_task(task):
+    # TODO: my own action instantiation
     normalize.normalize(task)
     relaxed_reachable, atoms, actions, axioms, reachable_action_params = instantiate.explore(task)
     if not relaxed_reachable:
         return None
-
-    # HACK! Goals should be treated differently.
-    if isinstance(task.goal, pddl.Conjunction):
-        goal_list = task.goal.parts
-    else:
-        goal_list = [task.goal]
-    for item in goal_list:
-        assert isinstance(item, pddl.Literal)
-
+    goal_list = instantiate_goal(task.goal)
     return InstantiatedTask(task, atoms, actions, axioms, reachable_action_params, goal_list)
 
 ##################################################

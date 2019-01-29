@@ -3,27 +3,26 @@ from __future__ import print_function
 import cProfile
 import pstats
 import numpy as np
+import argparse
 
-from examples.pybullet.construction.spatial_extrusion.debug import get_test_cfree
-from examples.pybullet.construction.spatial_extrusion.utils import create_elements, \
-    load_extrusion, TOOL_NAME, DISABLED_COLLISIONS, check_trajectory_collision, get_grasp_pose, load_world, \
-    get_node_neighbors, sample_direction, draw_element
+from examples.pybullet.construction.extrusion.utils import create_elements, \
+    load_extrusion, TOOL_NAME, check_trajectory_collision, get_grasp_pose, load_world, \
+    get_node_neighbors, sample_direction, draw_element, get_disabled_collisions, get_custom_limits
 from examples.pybullet.utils.pybullet_tools.utils import connect, disconnect, wait_for_interrupt, \
     get_movable_joints, get_sample_fn, set_joint_positions, link_from_name, add_line, inverse_kinematics, \
     get_link_pose, multiply, wait_for_duration, add_text, angle_between, plan_joint_motion, \
-    get_pose, invert, point_from_pose, get_distance, get_joint_positions, wrap_angle, \
-    get_collision_fn, dump_body, has_gui
+    get_pose, invert, point_from_pose, get_distance, get_joint_positions, wrap_angle, get_collision_fn
 from pddlstream.algorithms.focused import solve_focused
-from pddlstream.language.constants import PDDLProblem, And
+from pddlstream.language.constants import PDDLProblem, And, print_solution
 from pddlstream.language.generator import from_test
 from pddlstream.language.stream import StreamInfo, PartialInputs, NEGATIVE_SUFFIX
-from pddlstream.utils import read, get_file_path, print_solution, user_input, irange, neighbors_from_orders
+from pddlstream.utils import read, get_file_path, user_input, irange, neighbors_from_orders
 
 from examples.pybullet.utils.pybullet_tools.kuka_kr6r900_ik.ik import sample_tool_ik
 
 # TODO: YJ: what does this mean?
 SUPPORT_THETA = np.math.radians(10)  # Support polygon
-
+SELF_COLLISIONS = True
 JOINT_WEIGHTS = [0.3078557810844393, 0.443600199302506, 0.23544367607317915,
                  0.03637161028426032, 0.04644626184081511, 0.015054267683041092]
 
@@ -58,7 +57,8 @@ class PrintTrajectory(object):
         return 'print(e{}->e{})'.format(self.n1, self.n2)
 # end traj class
 
-# util functions
+##################################################
+
 def get_other_node(node1, element):
     assert node1 in element
     return element[node1 == element[0]]
@@ -149,18 +149,8 @@ def retrace_supporters(element, incoming_edges, supporters):
 # end util functions
 ##################################################
 
-# pddl parse, plan functions
-def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, trajectories=[]):
-    """
-    Specify PDDL problem instance
-    :param robot:
-    :param obstacles:
-    :param node_points:
-    :param element_bodies:
-    :param ground_nodes:
-    :param trajectories:
-    :return: result PDDLProblem
-    """
+def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes,
+                   trajectories=[], collisions=True):
     # TODO: instantiation slowness is due to condition effects
 
     domain_pddl = read(get_file_path(__file__, 'domain.pddl'))
@@ -170,7 +160,9 @@ def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, 
     stream_map = {
         #'test-cfree': from_test(get_test_cfree(element_bodies)),
         #'sample-print': from_gen_fn(get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes)),
-        'sample-print': get_wild_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes),
+        'sample-print': get_wild_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes,
+                                              collisions=collisions),
+        'test-stiffness': from_test(test_stiffness),
     }
 
     # assign initial values for predicates
@@ -214,20 +206,11 @@ def get_pddlstream(robot, obstacles, node_points, element_bodies, ground_nodes, 
 
     return PDDLProblem(domain_pddl, constant_map, stream_pddl, stream_map, init, goal)
 
-def plan_sequence(robot, obstacles, node_points, element_bodies, ground_nodes, trajectories=[]):
-    """
-    :param robot:
-    :param obstacles: pybullet bodies for static collision objects
-    :param node_points: a (mx1) list of (x,y,z)
-    :param element_bodies: a (nx1) list of element's pybullet bodies
-    :param ground_nodes: an int list of grounded nodes' ids
-    :param trajectories: precomputed list of PrintTrajectory for init
-    :return:
-    """
-    # if trajectories is None:
-    #     print("Err: empty initial print trajectory.")
-    #     return None
-
+def plan_sequence(robot, obstacles, node_points, element_bodies, ground_nodes,
+                  trajectories=[], collisions=True,
+                  debug=False, max_time=30):
+    if trajectories is None:
+        return None
     # TODO: iterated search using random restarts
     # TODO: most of the time seems to be spent extracting the stream plan
     # TODO: NEGATIVE_SUFFIX to make axioms easier
@@ -236,22 +219,19 @@ def plan_sequence(robot, obstacles, node_points, element_bodies, ground_nodes, t
     pr.enable()
 
     pddlstream_problem = get_pddlstream(robot, obstacles, node_points, element_bodies,
-                                        ground_nodes, trajectories=trajectories)
-
+                                        ground_nodes, trajectories=trajectories, collisions=collisions)
+    #solution = solve_exhaustive(pddlstream_problem, planner='goal-lazy', max_time=300, debug=True)
+    #solution = solve_incremental(pddlstream_problem, planner='add-random-lazy', max_time=600,
+    #                             max_planner_time=300, debug=True)
     stream_info = {
         'sample-print': StreamInfo(PartialInputs(unique=True)),
     }
 
     #planner = 'ff-ehc'
     planner = 'ff-lazy-tiebreak' # Branching factor becomes large. Rely on preferred. Preferred should also be cheaper
-
-    solution = solve_focused(pddlstream_problem, stream_info=stream_info, max_time=30,
-                             effort_weight=1, unit_efforts=True, use_skeleton=False, #unit_costs=True,
-                             planner=planner, max_planner_time=15, reorder=False, debug=True)
-    #solution = solve_exhaustive(pddlstream_problem, planner='goal-lazy', max_time=300, debug=True)
-    #solution = solve_incremental(pddlstream_problem, planner='add-random-lazy', max_time=600,
-    #                             max_planner_time=300, debug=True)
-
+    solution = solve_focused(pddlstream_problem, stream_info=stream_info, max_time=max_time,
+                             effort_weight=1, unit_efforts=True, use_skeleton=False, unit_costs=True,
+                             planner=planner, max_planner_time=15, debug=debug, reorder=False)
     # Reachability heuristics good for detecting dead-ends
     # Infeasibility from the start means disconnected or collision
 
@@ -376,8 +356,8 @@ def compute_direction_path(robot, length, reverse, element_body, direction, coll
     for translation in steps[1:]:
         #set_joint_positions(robot, movable_joints, current_conf)
         initial_angles = [wrap_angle(current_angle + delta) for delta in angle_deltas]
-        current_angle, current_conf = optimize_angle(robot, link, element_pose,
-                                                     translation, direction, reverse, initial_angles, collision_fn)
+        current_angle, current_conf = optimize_angle(
+            robot, link, element_pose, translation, direction, reverse, initial_angles, collision_fn)
         if current_conf is None:
             return None
         trajectory.append(current_conf)
@@ -413,24 +393,14 @@ def sample_print_path(robot, length, reverse, element_body, collision_fn):
 
 ##################################################
 
-def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes):
-    """
-
-    :param robot:
-    :param obstacles: static pybullet collision objs
-    :param node_points: a full list of node pts (x,y,z)
-    :param element_bodies: a full list of element tuple (end_u_id, end_v_id)
-    :param ground_nodes: a list of grounded nodes' ids
-    :return: a PrintTrajectory generation function.
-    """
-    max_attempts = 150
-    max_trajectories = 10 # YJ: what does this max_traj mean?
+def get_print_gen_fn(robot, fixed_obstacles, node_points, element_bodies, ground_nodes):
+    max_attempts = 300 # 150 | 300
+    max_trajectories = 10
     check_collisions = True
     # 50 doesn't seem to be enough
 
     movable_joints = get_movable_joints(robot)
-    disabled_collisions = {tuple(link_from_name(robot, link) for link in pair) for pair in DISABLED_COLLISIONS}
-
+    disabled_collisions = get_disabled_collisions(robot)
     #element_neighbors = get_element_neighbors(element_bodies)
     node_neighbors = get_node_neighbors(element_bodies)
     incoming_supporters, _ = neighbors_from_orders(get_supported_orders(element_bodies, node_points))
@@ -439,7 +409,7 @@ def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes
     # TODO: can slide a component of the element down
     # TODO: prioritize choices that don't collide with too many edges
 
-    def gen_fn(node1, element, fluents=[]):
+    def gen_fn(node1, element): # fluents=[]):
         reverse = (node1 != element[0])
         element_body = element_bodies[element]
         n1, n2 = reversed(element) if reverse else element
@@ -455,9 +425,11 @@ def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes
         # only the elements in the support set are considered collision objects
         elements_order = [e for e in element_bodies if (e != element) and (e not in supporters)]
         bodies_order = [element_bodies[e] for e in elements_order]
-        collision_fn = get_collision_fn(robot, movable_joints, obstacles + [element_bodies[e] for e in supporters],
-                                        attachments=[], self_collisions=CHECK_SELF_COLLISION,
-                                        disabled_collisions=disabled_collisions)
+        obstacles = fixed_obstacles + [element_bodies[e] for e in supporters]
+        collision_fn = get_collision_fn(robot, movable_joints, obstacles,
+                                        attachments=[], self_collisions=SELF_COLLISIONS,
+                                        disabled_collisions=disabled_collisions,
+                                        custom_limits={}) # TODO: get_custom_limits
         trajectories = []
         for num in irange(max_trajectories):
             for attempt in range(max_attempts):
@@ -474,37 +446,42 @@ def get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes
                     continue
                 print_traj = PrintTrajectory(robot, movable_joints, path, element, reverse, colliding)
                 trajectories.append(print_traj)
+                # TODO: need to prune dominated trajectories
                 if print_traj not in trajectories:
                     continue
-                print('{}) {}->{} ({}) | {} | {} | {}'.format(num, n1, n2, len(supporters), attempt, len(trajectories),
-                                                              sorted(len(t.colliding) for t in trajectories)))
-                yield print_traj,
+                print('{}) {}->{} ({}) | {} | {} | {}'.format(
+                    num, n1, n2, len(supporters), attempt, len(trajectories),
+                    sorted(len(t.colliding) for t in trajectories)))
+                yield (print_traj,)
                 if not colliding:
                     return
             else:
-                print('{}) {}->{} ({}) | {} | Failure!'.format(num, n1, n2, len(supporters), max_attempts))
-                break
+                print('{}) {}->{} ({}) | {} | Max attempts exceeded!'.format(
+                    num, len(supporters), n1, n2, max_attempts))
+                user_input('Continue?')
+                return
     return gen_fn
 
-def get_wild_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes):
+def get_wild_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes, collisions=True):
     gen_fn = get_print_gen_fn(robot, obstacles, node_points, element_bodies, ground_nodes)
-
-    def wild_gen_fn(node1, element, fluents=[]):
-        """
-        :param node1:
-        :param element:
-        :param fluents:
-        :return: trajectory:
-        collision info: ('Collision', traj, element)
-        """
-        for t, in gen_fn(node1, element, fluents=fluents):
+    def wild_gen_fn(node1, element):
+        for t, in gen_fn(node1, element):
             outputs = [(t,)]
-            facts = [('Collision', t, e2) for e2 in t.colliding]
+            facts = [('Collision', t, e2) for e2 in t.colliding] if collisions else []
             #outputs = []
             #facts.append(('PrintAction', node1, element, t))
             yield outputs, facts
 
     return wild_gen_fn
+
+def test_stiffness(fluents=[]):
+    assert all(fact[0] == 'printed' for fact in fluents)
+    elements = {fact[1] for fact in fluents}
+    # https://github.com/yijiangh/conmech
+    # TODO: to use the non-skeleton focused algorithm, need to remove the negative axiom upon success
+    #import conmech_py
+    #print(elements)
+    return True
 
 ##################################################
 
@@ -562,7 +539,7 @@ def compute_motions(robot, fixed_obstacles, element_bodies, initial_conf, trajec
     weights = np.array(JOINT_WEIGHTS)
     resolutions = np.divide(0.005*np.ones(weights.shape), weights)
     movable_joints = get_movable_joints(robot)
-    disabled_collisions = {tuple(link_from_name(robot, link) for link in pair) for pair in DISABLED_COLLISIONS}
+    disabled_collisions = get_disabled_collisions(robot)
     printed_elements = []
     current_conf = initial_conf
     all_trajectories = []
@@ -571,11 +548,11 @@ def compute_motions(robot, fixed_obstacles, element_bodies, initial_conf, trajec
         goal_conf = print_traj.path[0]
         obstacles = fixed_obstacles + [element_bodies[e] for e in printed_elements]
         path = plan_joint_motion(robot, movable_joints, goal_conf, obstacles=obstacles,
-                                 self_collisions=CHECK_SELF_COLLISION, disabled_collisions=disabled_collisions,
+                                 self_collisions=SELF_COLLISIONS, disabled_collisions=disabled_collisions,
                                  weights=weights, resolutions=resolutions,
                                  restarts=5, iterations=50, smooth=100)
         if path is None:
-            print('Failed to find a path!')
+            print('Failed to find a motion plan!')
             return None
         motion_traj = MotionTrajectory(robot, movable_joints, path)
         print('{}) {}'.format(i, motion_traj))
@@ -658,20 +635,22 @@ def debug_elements(robot, node_points, node_order, elements):
 
 ##################################################
 
-def main(viewer=False, precompute=False, motions=True):
+def main(precompute=False):
+    parser = argparse.ArgumentParser()
+    # djmm_test_block | mars_bubble | sig_artopt-bunny | topopt-100 | topopt-205 | topopt-310 | voronoi
+    parser.add_argument('-p', '--problem', default='simple_frame', help='The name of the problem to solve')
+    parser.add_argument('-c', '--cfree', action='store_true', help='Disables collisions with obstacles')
+    parser.add_argument('-m', '--motions', action='store_true', help='Plans motions between each extrusion')
+    parser.add_argument('-v', '--viewer', action='store_true', help='Enables the viewer during planning (slow!)')
+    args = parser.parse_args()
+    print('Arguments:', args)
+
     # TODO: setCollisionFilterGroupMask
     # TODO: fail if wild stream produces unexpected facts
     # TODO: try search at different cost levels (i.e. w/ and w/o abstract)
+    # TODO: submodule in https://github.mit.edu/yijiangh/assembly-instances
 
-    # TODO: submodule in assembly-instances
-    # https://github.mit.edu/yijiangh/assembly-instances
-    #read_minizinc_data(os.path.join(root_directory, 'print_data.txt'))
-    #return
-
-    # djmm_test_block | mars_bubble | sig_artopt-bunny | topopt-100 | topopt-205 | topopt-310 | voronoi
-    # simple_frame
-    elements, node_points, ground_nodes = load_extrusion('simple_frame')
-
+    elements, node_points, ground_nodes = load_extrusion(args.problem)
     node_order = list(range(len(node_points)))
     #np.random.shuffle(node_order)
     node_order = sorted(node_order, key=lambda n: node_points[n][2])
@@ -682,8 +661,7 @@ def main(viewer=False, precompute=False, motions=True):
     elements = [element for element in elements if all(n in node_order for n in element)]
     #plan = plan_sequence_test(node_points, elements, ground_nodes)
 
-    connect(use_gui=viewer)
-    # connect(use_gui=True) # viewer
+    connect(use_gui=args.viewer)
     floor, robot = load_world()
     obstacles = [floor]
     initial_conf = [0.08, -1.57, 1.74, 0.08, 0.17, -0.08]
@@ -711,8 +689,9 @@ def main(viewer=False, precompute=False, motions=True):
     else:
         trajectories = []
 
-    plan = plan_sequence(robot, obstacles, node_points, element_bodies, ground_nodes, trajectories=trajectories)
-    if motions:
+    plan = plan_sequence(robot, obstacles, node_points, element_bodies, ground_nodes,
+                         trajectories=trajectories, collisions=not args.cfree)
+    if args.motions:
         plan = compute_motions(robot, obstacles, element_bodies, initial_conf, plan)
     disconnect()
     display_trajectories(ground_nodes, plan)

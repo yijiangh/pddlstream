@@ -1,8 +1,8 @@
 from collections import defaultdict, deque
 
-from pddlstream.algorithms.downward import get_literals, conditions_hold
+from pddlstream.algorithms.downward import get_literals
 from pddlstream.language.constants import is_parameter
-from pddlstream.utils import Verbose, MockSet
+from pddlstream.utils import Verbose, MockSet, safe_zip
 
 
 def get_derived_predicates(axioms):
@@ -12,25 +12,21 @@ def get_derived_predicates(axioms):
     return axioms_from_name
 
 
-def get_necessary_axioms(instance, axioms, negative_from_name):
-    import pddl
-
-    if not axioms:
+def get_necessary_axioms(conditions, axioms, negative_from_name):
+    if not conditions or not axioms:
         return {}
     axioms_from_name = get_derived_predicates(axioms)
     atom_queue = []
     processed_atoms = set()
     def add_literals(literals):
-        for literal in literals:
-            atom = literal.positive()
+        for lit in literals:
+            atom = lit.positive()
             if atom not in processed_atoms:
-                atom_queue.append(literal.positive())
+                atom_queue.append(atom) # Previously was lit.positive() for some reason?
                 processed_atoms.add(atom)
 
-    add_literals(instance.precondition)
-    for (cond, _) in (instance.add_effects + instance.del_effects):
-        add_literals(cond)
-
+    import pddl
+    add_literals(conditions)
     axiom_from_action = {}
     partial_instantiations = set()
     while atom_queue:
@@ -42,10 +38,8 @@ def get_necessary_axioms(instance, axioms, negative_from_name):
             if key in partial_instantiations:
                 continue
             partial_instantiations.add(key)
-            parts = []
-            for literal in get_literals(axiom.condition): # TODO: assumes a conjunction?
-                if literal.predicate not in negative_from_name:
-                    parts.append(literal.rename_variables(var_mapping))
+            parts = [l.rename_variables(var_mapping) for l in get_literals(axiom.condition)
+                     if l.predicate not in negative_from_name] # Assumes a conjunction?
             # new_condition = axiom.condition.uniquify_variables(None, var_mapping)
             effect_args = [var_mapping.get(a.name, a.name) for a in derived_parameters]
             effect = pddl.Effect([], pddl.Truth(), pddl.conditions.Atom(axiom.name, effect_args))
@@ -92,6 +86,7 @@ def filter_negated(conditions, negated_from_name):
     return list(filter(lambda a: a.predicate not in negated_from_name, conditions))
 
 def get_achieving_axioms(state, axioms, negated_from_name={}):
+    # TODO: order by stream effort
     unprocessed_from_atom = defaultdict(list)
     axiom_from_atom = {}
     remaining_from_stream = {}
@@ -140,23 +135,42 @@ def is_useful_atom(atom, conditions_from_predicate):
     if not isinstance(atom, pddl.Atom):
         return False
     for atom2 in conditions_from_predicate[atom.predicate]:
-        if all(is_parameter(a2) or (a1 == a2) for a1, a2 in zip(atom.args, atom2.args)):
+        if all(is_parameter(a2) or (a1 == a2) for a1, a2 in safe_zip(atom.args, atom2.args)):
             return True
     return False
 
-def extract_axiom_plan(task, action_instance, negative_from_name, static_state=set()):
+def extraction_helper(init, instantiated_axioms, goals, negative_from_name={}):
+    import axiom_rules
+    # TODO: filter instantiated_axioms that aren't applicable?
+    derived_predicates = {instance.effect.predicate for instance in instantiated_axioms}
+    derived_goals = {l for l in goals if l.predicate in derived_predicates}
+    if not derived_goals:
+        return []
+    with Verbose(False):
+        helpful_axioms, axiom_init, _ = axiom_rules.handle_axioms(
+            [], instantiated_axioms, derived_goals)
+    axiom_init = set(axiom_init)
+    axiom_effects = {axiom.effect for axiom in helpful_axioms}
+    #assert len(axiom_effects) == len(axiom_init)
+    for pre in list(derived_goals) + list(axiom_effects):
+        if pre.positive() not in axiom_init:
+            axiom_init.add(pre.positive().negate())
+    axiom_from_atom = get_achieving_axioms(init | axiom_init, helpful_axioms, negative_from_name)
+    axiom_plan = []  # Could always add all conditions
+    success = extract_axioms(axiom_from_atom, derived_goals, axiom_plan, negative_from_name)
+    if not success:
+        print('Warning! Could extract an axiom plan')
+        #return None
+    return axiom_plan
+
+def extract_axiom_plan(task, goals, negative_from_name, static_state=set()):
     import pddl_to_prolog
     import build_model
-    import axiom_rules
     import instantiate
-
+    # TODO: only reinstantiate the negative axioms
     axioms_from_name = get_derived_predicates(task.axioms)
-    derived_preconditions = {l for l in action_instance.precondition if l.predicate in axioms_from_name}
-    nonderived_preconditions = {l for l in action_instance.precondition if l not in derived_preconditions}
-    if not conditions_hold(task.init, nonderived_preconditions):
-        return None
-
-    axiom_from_action = get_necessary_axioms(action_instance, task.axioms, negative_from_name)
+    derived_goals = {l for l in goals if l.predicate in axioms_from_name}
+    axiom_from_action = get_necessary_axioms(derived_goals, task.axioms, negative_from_name)
     if not axiom_from_action:
         return []
     conditions_from_predicate = defaultdict(set)
@@ -167,6 +181,7 @@ def extract_axiom_plan(task, action_instance, negative_from_name, static_state=s
     original_init = task.init
     original_actions = task.actions
     original_axioms = task.axioms
+    # TODO: retrieve initial state based on if helpful
     task.init = {atom for atom in task.init if is_useful_atom(atom, conditions_from_predicate)}
     # TODO: store map from predicate to atom
     task.actions = axiom_from_action.keys()
@@ -180,21 +195,6 @@ def extract_axiom_plan(task, action_instance, negative_from_name, static_state=s
     opt_facts = instantiate.get_fluent_facts(task, model) | (task.init - static_state)
     mock_fluent = MockSet(lambda item: (item.predicate in negative_from_name) or (item in opt_facts))
     instantiated_axioms = instantiate_necessary_axioms(model, static_state, mock_fluent, axiom_from_action)
-
-    goal_list = []
-    with Verbose(False):
-        helpful_axioms, axiom_init, _ = axiom_rules.handle_axioms(
-            [action_instance], instantiated_axioms, goal_list)
-    axiom_init = set(axiom_init)
-    axiom_effects = {axiom.effect for axiom in helpful_axioms}
-    #assert len(axiom_effects) == len(axiom_init)
-    for pre in list(derived_preconditions) + list(axiom_effects):
-        if (pre not in axiom_init) and (pre.negate() not in axiom_init):
-            axiom_init.add(pre.positive().negate())
-    axiom_from_atom = get_achieving_axioms(task.init | axiom_init, helpful_axioms, negative_from_name)
-    axiom_plan = []  # Could always add all conditions
-    success = extract_axioms(axiom_from_atom, derived_preconditions, axiom_plan, negative_from_name)
+    axiom_plan = extraction_helper(task.init, instantiated_axioms, derived_goals, negative_from_name)
     task.init = original_init
-    #if not success:
-    #    return None
     return axiom_plan
