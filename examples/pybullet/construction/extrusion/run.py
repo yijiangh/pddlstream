@@ -18,7 +18,7 @@ from pddlstream.language.generator import from_test
 from pddlstream.language.stream import StreamInfo, PartialInputs, NEGATIVE_SUFFIX
 from pddlstream.utils import read, get_file_path, user_input, irange, neighbors_from_orders
 
-from examples.pybullet.utils.pybullet_tools.kuka_kr6r900_ik.ik import sample_tool_ik
+from examples.pybullet.utils.pybullet_tools.ikfast.kuka_kr6r900.ik import sample_tool_ik
 
 # TODO: YJ: what does this mean?
 SUPPORT_THETA = np.math.radians(10)  # Support polygon
