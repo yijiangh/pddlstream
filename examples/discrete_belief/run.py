@@ -14,9 +14,9 @@ from examples.discrete_belief.dist import DDist, MixtureDD, DeltaDist, UniformDi
 from pddlstream.algorithms.incremental import solve_incremental
 from pddlstream.algorithms.downward import get_cost_scale, set_cost_scale, MAX_FD_COST
 
-from pddlstream.language.constants import And
+from pddlstream.language.constants import And, print_solution
 from pddlstream.language.stream import StreamInfo
-from pddlstream.utils import print_solution, read, INF
+from pddlstream.utils import read, INF
 
 # TODO: would be helpful if I could use <= here
 # TODO: could use fixed threshold or the max of the ones met
@@ -65,13 +65,12 @@ def get_belief_problem(deterministic, observable):
 
 ##################################################
 
-SCALE_COST = 1e3
-MAX_COST = MAX_FD_COST / (10 * SCALE_COST)
+MAX_COST = MAX_FD_COST / (100 * get_cost_scale())
 
-def clip_cost(cost): # TODO: move this to downward?
+def clip_cost(cost, max_cost=MAX_COST): # TODO: move this to downward?
     if cost == INF:
-        return MAX_COST
-    return min(cost, MAX_COST)
+        return max_cost
+    return min(cost, max_cost)
 
 
 #def clip_p(p, min_p=1e-3, max_p=1-1e-3):
@@ -273,7 +272,6 @@ def main(deterministic=False, observable=False, collisions=True, focused=True, f
     # TODO: global search over the state
     belief_problem = get_belief_problem(deterministic, observable)
     pddlstream_problem = to_pddlstream(belief_problem, collisions)
-    set_cost_scale(SCALE_COST)
     print('Cost scale:', get_cost_scale())
 
     pr = cProfile.Profile()
@@ -288,16 +286,13 @@ def main(deterministic=False, observable=False, collisions=True, focused=True, f
             'LookCost': FunctionInfo(get_look_cost_fn(p_look_fp=0, p_look_fn=0)),
         }
         solution = solve_focused(pddlstream_problem, stream_info=stream_info, planner=planner, debug=False,
-                                 max_cost=0, unit_costs=False, max_time=30)
+                                 success_cost=0, unit_costs=False, max_time=30)
     else:
         solution = solve_incremental(pddlstream_problem, planner=planner, debug=True,
-                                     max_cost=MAX_COST, unit_costs=False, max_time=30)
+                                     success_cost=MAX_COST, unit_costs=False, max_time=30)
     pr.disable()
     pstats.Stats(pr).sort_stats('tottime').print_stats(10)
-
     print_solution(solution)
-    plan, cost, init = solution
-    print('Real cost:', cost)
 
 if __name__ == '__main__':
     main(deterministic=False, observable=False, collisions=True, focused=True)

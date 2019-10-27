@@ -5,7 +5,7 @@ from itertools import count
 
 from pydrake.multibody.multibody_tree import WeldJoint
 
-from examples.drake.utils import create_transform, get_model_bodies, set_max_joint_positions, set_min_joint_positions
+from examples.drake.utils import create_transform, get_model_bodies, set_joint_positions, get_movable_joints
 
 
 def weld_gripper(mbp, robot_index, gripper_index):
@@ -35,17 +35,18 @@ def get_open_wsg50_positions(mbp, model_index):
 
 
 def close_wsg50_gripper(mbp, context, model_index): # 0.05
-    set_max_joint_positions(context, [mbp.GetJointByName(WSG50_LEFT_FINGER, model_index)])
-    set_min_joint_positions(context, [mbp.GetJointByName(WSG50_RIGHT_FINGER, model_index)])
+    set_joint_positions(get_movable_joints(mbp, model_index), context,
+                        get_close_wsg50_positions(mbp, model_index))
 
 
 def open_wsg50_gripper(mbp, context, model_index):
-    set_min_joint_positions(context, [mbp.GetJointByName(WSG50_LEFT_FINGER, model_index)])
-    set_max_joint_positions(context, [mbp.GetJointByName(WSG50_RIGHT_FINGER, model_index)])
+    set_joint_positions(get_movable_joints(mbp, model_index), context,
+                        get_open_wsg50_positions(mbp, model_index))
 
 ##################################################
 
 # TODO: compute from WSG50 fingers
+# TODO: gripper closing via collision information
 TOOL_Z = 0.025 + 0.075/2 - (-0.049133) # Difference between WSG50 finger tip and body link
 DEFAULT_LENGTH = 0.03
 #DEFAULT_LENGTH = 0.0
@@ -66,12 +67,11 @@ def get_top_cylinder_grasps(aabb, max_width=DEFAULT_MAX_WIDTH, grasp_length=DEFA
         rotate_z = create_transform(rotation=[0, 0, theta])
         yield reflect_z.multiply(translate_z).multiply(rotate_z).multiply(aabb_from_body)
 
-# TODO: cylinder grasps
-# TODO: detect geometry type from the dictionary
 
 def get_box_grasps(aabb, max_width=DEFAULT_MAX_WIDTH, grasp_length=DEFAULT_LENGTH,
                    orientations=list(range(4)), pitch_range=(-np.pi/2, np.pi/2)): # y is out of gripper initially
     # TODO: different positions
+    # TODO: cylinder grasps
     center, extent = aabb
     dx, dy, dz = extent
     reflect_z = create_transform(rotation=[np.pi / 2, 0, 0])
@@ -99,16 +99,12 @@ DOOR_CLOSED = 0
 #DOOR_OPEN = 0.49 * np.pi
 DOOR_OPEN = 0.45 * np.pi
 #DOOR_OPEN = 0.25 * np.pi  # Seems to be the limit for the door itself
+# np.pi/2 is the physical max
 
-def get_open_positions(door_body):
+def get_door_positions(door_body, abs_position):
     name = door_body.name()
     if name == 'left_door':
-        return [-DOOR_OPEN]
+        return [-abs(abs_position)]
     elif name == 'right_door':
-        return [DOOR_OPEN]
-    else:
-        raise ValueError(name)
-
-
-def get_closed_positions(door_body):
-    return [DOOR_CLOSED]
+        return [abs(abs_position)]
+    raise ValueError(name)

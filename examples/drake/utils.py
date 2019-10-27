@@ -1,22 +1,20 @@
 from __future__ import print_function
 
 import random
+import numpy as np
+from collections import namedtuple
 from itertools import product
 
-import numpy as np
-
-from collections import namedtuple
-
-from pydrake.geometry import DispatchLoadMessage
-from pydrake.multibody.multibody_tree import (ModelInstanceIndex, UniformGravityFieldElement,
-    WeldJoint, RevoluteJoint, PrismaticJoint, BodyIndex, JointIndex, JointActuatorIndex, FrameIndex)
-from pydrake.multibody.inverse_kinematics import InverseKinematics
-from pydrake.solvers.mathematicalprogram import SolutionResult
-from pydrake.math import RollPitchYaw, RotationMatrix
-from pydrake.util.eigen_geometry import Isometry3
 from drake import lcmt_viewer_load_robot
-from pydrake.lcm import DrakeMockLcm
 from pydrake.all import (Quaternion, RigidTransform, RotationMatrix)
+from pydrake.geometry import DispatchLoadMessage
+from pydrake.lcm import DrakeMockLcm
+from pydrake.math import RollPitchYaw
+from pydrake.multibody.inverse_kinematics import InverseKinematics
+from pydrake.multibody.multibody_tree import (ModelInstanceIndex, WeldJoint, RevoluteJoint, PrismaticJoint, BodyIndex,
+                                              JointIndex, JointActuatorIndex, FrameIndex)
+from pydrake.solvers.mathematicalprogram import SolutionResult
+from pydrake.util.eigen_geometry import Isometry3
 
 user_input = raw_input
 
@@ -43,6 +41,26 @@ def aabb_from_points(points):
     center = (np.array(lower) + np.array(upper)) / 2.
     extent = (np.array(upper) - np.array(lower)) / 2.
     return BoundingBox(center, extent)
+
+
+def aabb_contains_point(point, aabb):
+    lower = get_aabb_lower(aabb)
+    upper = get_aabb_upper(aabb)
+    return np.greater_equal(point, lower).all() and \
+           np.greater_equal(upper, point).all()
+
+
+def get_model_aabb(mbp, context, box_from_geom, model_index):
+    # TODO: world frame or wrt base?
+    points = []
+    body_names = {body.name() for body in get_model_bodies(mbp, model_index)}
+    for (model_int, body_name, _), (aabb, body_from_geom, _) in box_from_geom.items():
+        if (int(model_index) == model_int) and (body_name in body_names):
+            body = mbp.GetBodyByName(body_name, model_index)
+            world_from_body = get_body_pose(context, body)
+            points.extend(world_from_body.multiply(body_from_geom).multiply(vertex)
+                          for vertex in vertices_from_aabb(aabb))
+    return aabb_from_points(points)
 
 ##################################################
 
@@ -129,12 +147,16 @@ def get_model_joints(mbp, model_index):
     return [joint for joint in get_joints(mbp) if joint.model_instance() == model_index]
 
 
-def is_fixed_joints(joint):
+def get_model_actuators(mbp, model_index):
+    return [actuator for actuator in get_joint_actuators(mbp) if actuator.model_instance() == model_index]
+
+
+def is_fixed_joint(joint):
     return joint.num_positions() == 0
 
 
 def prune_fixed_joints(joints):
-    return list(filter(lambda j: not is_fixed_joints(j), joints))
+    return list(filter(lambda j: not is_fixed_joint(j), joints))
 
 
 def get_movable_joints(mbp, model_index):
@@ -145,6 +167,10 @@ def get_parent_joints(mbp, body):
     # Really should just be none or one
     return [joint for joint in get_movable_joints(mbp, body.model_instance())
             if joint.child_body() == body]
+
+
+def bodies_from_models(plant, models):
+    return {body for model in models for body in get_model_bodies(plant, model)}
 
 ##################################################
 
@@ -195,22 +221,8 @@ def set_configuration(mbp, context, model_index, config):
     return set_joint_positions(get_movable_joints(mbp, model_index), context, config)
 
 
-##################################################
-
-
-def set_min_joint_positions(context, joints):
-    for joint in prune_fixed_joints(joints):
-        lower, _ = get_joint_limits(joint)
-        set_joint_position(joint, context, lower)
-
-
-def set_max_joint_positions(context, joints):
-    for joint in prune_fixed_joints(joints):
-        _, upper = get_joint_limits(joint)
-        set_joint_position(joint, context, upper)
-
-
 def get_rest_positions(joints):
+    # TODO: get min/max positions
     return np.zeros(len(joints))
 
 
@@ -311,16 +323,6 @@ def weld_to_world(mbp, model_index, world_pose):
                   X_PC=world_pose))
 
 
-def RenderSystemWithGraphviz(system, output_file="system_view.gz"):
-    ''' Renders the Drake system (presumably a diagram,
-    otherwise this graph will be fairly trivial) using
-    graphviz to a specified file. '''
-    from graphviz import Source
-    string = system.GetGraphvizString()
-    src = Source(string)
-    src.render(output_file, view=False)
-    
-
 #def fix_input_ports(mbp, context):
 #    for i in range(mbp.get_num_input_ports()):
 #        model_index = mbp.get_input_port(i)
@@ -338,6 +340,7 @@ def solve_inverse_kinematics(mbp, target_frame, target_pose,
             lower, upper = get_joint_limits(joint)
             if -np.inf < lower < upper < np.inf:
                 initial_guess[joint.position_start()] = random.uniform(lower, upper)
+    assert mbp.num_positions() == len(initial_guess)
 
     ik_scene = InverseKinematics(mbp)
     world_frame = mbp.world_frame()
@@ -403,6 +406,8 @@ def get_geom_name(geom):
     return name_from_type[geom.type]
 
 def get_box_from_geom(scene_graph, visual_only=True):
+    # TODO: GeometryInstance, InternalGeometry, & GeometryContext to get the shape of objects
+    # TODO: get_contact_results_output_port
     # https://github.com/RussTedrake/underactuated/blob/master/src/underactuated/meshcat_visualizer.py
     # https://github.com/RobotLocomotion/drake/blob/master/lcmtypes/lcmt_viewer_draw.lcm
     mock_lcm = DrakeMockLcm()

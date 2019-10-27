@@ -11,14 +11,12 @@ from examples.pybullet.utils.pybullet_tools.kuka_primitives import BodyPose, Bod
     get_holding_motion_gen, get_movable_collision_test
 from examples.pybullet.utils.pybullet_tools.utils import WorldSaver, connect, dump_world, get_pose, set_pose, Pose, \
     Point, set_default_camera, stable_z, \
-    BLOCK_URDF, get_configuration, SINK_URDF, STOVE_URDF, load_model, is_placement, get_body_name, \
-    disconnect, DRAKE_IIWA_URDF, get_bodies, user_input, HideOutput
+    BLOCK_URDF, SMALL_BLOCK_URDF, get_configuration, SINK_URDF, STOVE_URDF, load_model, is_placement, get_body_name, \
+    disconnect, DRAKE_IIWA_URDF, get_bodies, HideOutput, wait_for_user, KUKA_IIWA_URDF, add_data_path, load_pybullet
 from pddlstream.algorithms.focused import solve_focused
 from pddlstream.language.generator import from_gen_fn, from_fn, empty_gen
-from pddlstream.language.synthesizer import StreamSynthesizer
-from pddlstream.utils import print_solution, read, INF, get_file_path, find_unique
-
-USE_SYNTHESIZERS = False
+from pddlstream.utils import read, INF, get_file_path, find_unique
+from pddlstream.language.constants import print_solution
 
 def get_fixed(robot, movable):
     rigid = [body for body in get_bodies() if body != robot]
@@ -111,12 +109,6 @@ def pddlstream_from_problem(robot, movable=[], teleport=False, grasp_name='top')
         'TrajCollision': get_movable_collision_test(),
     }
 
-    if USE_SYNTHESIZERS:
-        stream_map.update({
-            'plan-free-motion': empty_gen(),
-            'plan-holding-motion': empty_gen(),
-        })
-
     return domain_pddl, constant_map, stream_pddl, stream_map, init, goal
 
 
@@ -126,22 +118,26 @@ def load_world():
     # TODO: store internal world info here to be reloaded
     with HideOutput():
         robot = load_model(DRAKE_IIWA_URDF)
-        # robot = load_model(KUKA_IIWA_URDF)
+        #add_data_path()
+        #robot = load_pybullet(KUKA_IIWA_URDF)
         floor = load_model('models/short_floor.urdf')
         sink = load_model(SINK_URDF, pose=Pose(Point(x=-0.5)))
         stove = load_model(STOVE_URDF, pose=Pose(Point(x=+0.5)))
-        block = load_model(BLOCK_URDF, fixed_base=False)
+        celery = load_model(BLOCK_URDF, fixed_base=False)
+        radish = load_model(SMALL_BLOCK_URDF, fixed_base=False)
         #cup = load_model('models/dinnerware/cup/cup_small.urdf',
         # Pose(Point(x=+0.5, y=+0.5, z=0.5)), fixed_base=False)
 
     body_names = {
         sink: 'sink',
         stove: 'stove',
-        block: 'celery',
+        celery: 'celery',
+        radish: 'radish',
     }
-    movable_bodies = [block]
+    movable_bodies = [celery, radish]
 
-    set_pose(block, Pose(Point(y=0.5, z=stable_z(block, floor))))
+    set_pose(celery, Pose(Point(y=0.5, z=stable_z(celery, floor))))
+    set_pose(radish, Pose(Point(y=-0.5, z=stable_z(radish, floor))))
     set_default_camera()
 
     return robot, body_names, movable_bodies
@@ -170,12 +166,6 @@ def main(display=True, teleport=False):
 
     pddlstream_problem = pddlstream_from_problem(robot, movable=movable, teleport=teleport)
     _, _, _, stream_map, init, goal = pddlstream_problem
-    synthesizers = [
-        StreamSynthesizer('safe-free-motion', {'plan-free-motion': 1, 'trajcollision': 0},
-                          from_fn(get_free_motion_synth(robot, movable, teleport))),
-        StreamSynthesizer('safe-holding-motion', {'plan-holding-motion': 1, 'trajcollision': 0},
-                          from_fn(get_holding_motion_synth(robot, movable, teleport))),
-    ] if USE_SYNTHESIZERS else []
     print('Init:', init)
     print('Goal:', goal)
     print('Streams:', stream_map.keys())
@@ -184,7 +174,7 @@ def main(display=True, teleport=False):
 
     pr = cProfile.Profile()
     pr.enable()
-    solution = solve_focused(pddlstream_problem, synthesizers=synthesizers, max_cost=INF)
+    solution = solve_focused(pddlstream_problem, success_cost=INF)
     print_solution(solution)
     plan, cost, evaluations = solution
     pr.disable()
@@ -205,15 +195,14 @@ def main(display=True, teleport=False):
 
     command = postprocess_plan(plan)
     if args.simulate:
-        user_input('Simulate?')
+        wait_for_user('Simulate?')
         command.control()
     else:
-        user_input('Execute?')
+        wait_for_user('Execute?')
         #command.step()
         command.refine(num_steps=10).execute(time_step=0.001)
 
-    #wait_for_interrupt()
-    user_input('Finish?')
+    wait_for_user('Finish?')
     disconnect()
 
 if __name__ == '__main__':

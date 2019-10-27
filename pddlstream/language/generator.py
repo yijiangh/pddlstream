@@ -5,6 +5,7 @@ from itertools import count
 from pddlstream.utils import INF, elapsed_time
 
 # TODO: indicate wild stream output just from the output form
+# TODO: depth limited and cycle-free optimistic objects
 
 class BoundedGenerator(Iterator):
     """
@@ -88,8 +89,13 @@ def from_constant(constant):
     return from_fn(fn_from_constant(constant))
 
 
+def negate_test(test):
+    return lambda *args, **kwargs: not test(*args, **kwargs)
+
+
 def empty_gen():
     return lambda *args, **kwargs: iter([])
+#empty_gen = lambda *args, **kwargs: iter([])
 
 ##################################################
 
@@ -97,6 +103,9 @@ def empty_gen():
 
 def fn_from_constant(constant):
     return lambda *args, **kwargs: constant
+
+universe_test = fn_from_constant(True)
+empty_test = fn_from_constant(False)
 
 ##################################################
 
