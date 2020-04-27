@@ -1,5 +1,6 @@
 import time
 from collections import namedtuple, OrderedDict
+from termcolor import cprint
 
 from pddlstream.language.constants import is_plan
 from pddlstream.language.conversion import evaluation_from_fact, obj_from_value_expression, revert_solution
@@ -55,6 +56,8 @@ class SolutionStore(object):
     def is_timeout(self):
         return (self.max_time <= self.elapsed_time()) or not check_memory(self.max_memory)
     def is_terminated(self):
+        if self.is_timeout():
+            cprint('Timeout!', 'red')
         return self.is_solved() or self.is_timeout()
     #def __repr__(self):
     #    raise NotImplementedError()
@@ -68,6 +71,8 @@ def add_fact(evaluations, fact, result=INIT_EVALUATION, complexity=0):
     evaluation = evaluation_from_fact(fact)
     if evaluation in evaluations:
         return False
+    # U[fact] = (level, certifying stream instance)
+    # initial states' certifying stream is None
     evaluations[evaluation] = EvaluationNode(complexity, result)
     return True
 

@@ -16,9 +16,12 @@ from pddlstream.utils import INF, Verbose
 UPDATE_STATISTICS = False
 
 def process_instance(instantiator, evaluations, instance, verbose=False): #, **complexity_args):
+    # complexity = layer in the paper
+    # instantiator = U
     if instance.enumerated:
         return False
     new_results, new_facts = instance.next_results(verbose=verbose)
+
     #remove_blocked(evaluations, instance, new_results)
     for result in new_results:
         complexity = result.compute_complexity(evaluations)
@@ -52,7 +55,9 @@ def solve_finite(evaluations, goal_exp, domain, unit_costs=False, debug=False, *
 ##################################################
 
 def process_stream_queue(instantiator, store, complexity_limit, **kwargs):
+    # apply streams (S, U', l; OUTPUT)
     num_calls = 0
+    # for k in [1, ..., l]
     while not store.is_terminated() and instantiator and (instantiator.min_complexity() <= complexity_limit):
         num_calls += process_instance(instantiator, store.evaluations, instantiator.pop_stream(), **kwargs)
     return num_calls

@@ -13,7 +13,7 @@ from pddlstream.language.object import Object, OptimisticObject, UniqueOptValue,
 from pddlstream.utils import str_from_object, get_mapping, irange, apply_mapping
 
 VERBOSE_FAILURES = True
-VERBOSE_WILD = False
+VERBOSE_WILD = True
 DEFAULT_UNIQUE = False
 NEGATIVE_BLOCKED = True
 NEGATIVE_SUFFIX = '-negative'
@@ -258,12 +258,12 @@ class StreamInstance(Instance):
         if verbose:
             if (not new_values and VERBOSE_FAILURES) or \
                     (new_values and self.info.verbose):
-                print('iter={}, outs={}) {}:{}->{}'.format(
+                print('level={}, outs={}) {}:{}->{}'.format(
                     self.num_calls, len(new_values), self.external.name,
                     str_from_object(self.get_input_values()), str_from_object(new_values)))
             if VERBOSE_WILD and new_facts:
                 # TODO: format all_new_facts
-                print('iter={}, facts={}) {}:{}->{}'.format(
+                print('level={}, facts={}) {}:{}->{}'.format(
                     self.num_calls, self.external.name, str_from_object(self.get_input_values()),
                     new_facts, len(new_facts)))
 
@@ -276,6 +276,8 @@ class StreamInstance(Instance):
             self.update_statistics(start_time, new_results)
         new_facts = list(map(obj_from_value_expression, new_facts))
         self.successful |= any(r.is_successful() for r in new_results)
+
+        # ? count(s(x))
         self.num_calls += 1 # Must be after get_result
         #if self.external.is_test() and self.successful:
         #    # Set of possible test stream outputs is exhausted (excluding wild)

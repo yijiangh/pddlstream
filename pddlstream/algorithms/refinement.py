@@ -184,18 +184,23 @@ def hierarchical_plan_streams(evaluations, externals, results, optimistic_solve_
     return hierarchical_plan_streams(evaluations, externals, next_results, optimistic_solve_fn, complexity_limit,
                                      new_depth, next_constraints, **effort_args)
 
+from termcolor import cprint
+
 def iterative_plan_streams(all_evaluations, externals, optimistic_solve_fn, complexity_limit, **effort_args):
     # Previously didn't have unique optimistic objects that could be constructed at arbitrary depths
+    # level map U
     complexity_evals = {e: n for e, n in all_evaluations.items() if n.complexity <= complexity_limit}
     num_iterations = 0
+
     while True:
         num_iterations += 1
         results, exhausted = optimistic_process_streams(complexity_evals, externals, complexity_limit, **effort_args)
         stream_plan, action_plan, cost, final_depth = hierarchical_plan_streams(
             complexity_evals, externals, results, optimistic_solve_fn, complexity_limit,
             depth=0, constraints=None, **effort_args)
-        print('Attempt: {} | Results: {} | Depth: {} | Success: {}'.format(
-            num_iterations, len(results), final_depth, is_plan(action_plan)))
+        print('%'*10)
+        cprint('Attempt: {} | Result #act: {} | Depth: {} | Success: {} | Cost: {}'.format(
+            num_iterations, len(results), final_depth, is_plan(action_plan), cost), 'magenta')
         if is_plan(action_plan):
             return stream_plan, action_plan, cost
         if final_depth == 0:
