@@ -51,6 +51,15 @@ def solve_focused(problem, constraints=PlanConstraints(), stream_info={}, replan
                   visualize=False, verbose=True, **search_kwargs):
     """
     Solves a PDDLStream problem by first hypothesizing stream outputs and then determining whether they exist
+    The default algorithm used is the adaptive algorithm, which does not support WildOutput at this moment.
+
+    Note:
+        'focused' : {'max_skeletons':None, 'bind':False},
+        'binding' : {'max_skeletons':None, 'bind':True},
+        'adaptive': {'max_skeletons':1,    'bind':False},
+
+    Arguments
+    =========
     :param problem: a PDDLStream problem
     :param constraints: PlanConstraints on the set of legal solutions
     :param stream_info: a dictionary from stream name to StreamInfo altering how individual streams are handled
@@ -69,6 +78,13 @@ def solve_focused(problem, constraints=PlanConstraints(), stream_info={}, replan
     :param visualize: if True, it draws the constraint network and stream plan as a graphviz file
     :param verbose: if True, this prints the result of each stream application
     :param search_kwargs: keyword args for the search subroutine
+    :param max_failure only applies if max_skeletons=None
+    :param success_cost is the max cost of allowed solutions
+           success_cost=0 runs the planner in a true anytime mode
+           success_cost=INF terminates whenever any plan is found
+
+    Returns
+    =========
     :return: a tuple (plan, cost, evaluations) where plan is a sequence of actions
         (or None), cost is the cost of the plan, and evaluations is init but expanded
         using stream applications
@@ -111,12 +127,12 @@ def solve_focused(problem, constraints=PlanConstraints(), stream_info={}, replan
         start_time = time.time()
         num_iterations += 1
 
-        # level (complexity) : # of stream evaluations that are required to certify a fact
+        # ? level (complexity) : # of stream evaluations that are required to certify a fact
         # recursively, the level of a fact incorporates both:
         #   - the accumulated stream evaluations to certify its domain fact
         #   - number of stream evaluations that are requried
 
-        # the complexity (level) of a stream instance s(x) given a complexity map U:
+        # ? the complexity (level) of a stream instance s(x) given a complexity map U:
         #   level(U, s(x)) = 1 + count(s(x)) + max_{p \in s.domain} U[p].level
         #       1 + past evaluations + maximal level of its domain facts in U
 
@@ -165,9 +181,9 @@ def solve_focused(problem, constraints=PlanConstraints(), stream_info={}, replan
 
         num_optimistic = sum(r.optimistic for r in stream_plan) if stream_plan else 0
         action_plan = opt_plan.action_plan if is_plan(opt_plan) else opt_plan
-        print('Stream plan (len {}, #opt {}, #effort {:.3f}): \n{}\nAction plan (len {}, cost {:.3f}): \n{}'.format(
-            get_length(stream_plan), num_optimistic, compute_plan_effort(stream_plan), stream_plan,
-            get_length(action_plan), cost, str_from_plan(action_plan)))
+        print('Stream plan (len {}, #opt {}, #effort {:.3f}), Action plan (len {}, cost {:.3f})'.format(
+            get_length(stream_plan), num_optimistic, compute_plan_effort(stream_plan), #stream_plan,
+            get_length(action_plan), cost)) #str_from_plan(action_plan)
 
         if is_plan(stream_plan) and visualize:
             log_plans(stream_plan, action_plan, num_iterations)
@@ -190,6 +206,7 @@ def solve_focused(problem, constraints=PlanConstraints(), stream_info={}, replan
         #print(stream_plan_complexity(evaluations, stream_plan))
         if use_skeletons:
             # ? adaptive algorithm
+            cprint('adaptive process stream', 'yellow')
             #optimizer_plan = replan_with_optimizers(evaluations, stream_plan, domain, optimizers)
             optimizer_plan = None
             if optimizer_plan is not None:
@@ -202,10 +219,12 @@ def solve_focused(problem, constraints=PlanConstraints(), stream_info={}, replan
             if not skeleton_queue.process(stream_plan, opt_plan, cost, complexity_limit, allocated_sample_time):
                 break
         else:
-            # ? focused algorithm here
+            # ? focused algorithm, simply use `next` to add all stream certified facts to U
+            cprint('adaptive process stream', 'yellow')
             process_stream_plan(store, domain, disabled, stream_plan, opt_plan, cost,
                                 bind=bind, max_failures=max_failures)
         sample_time += elapsed_time(start_time)
+        cprint('^'*10, 'yellow')
 
     write_stream_statistics(externals, verbose)
     return store.extract_solution()

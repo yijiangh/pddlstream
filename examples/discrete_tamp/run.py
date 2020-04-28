@@ -54,13 +54,21 @@ def pddlstream_from_tamp(tamp_problem):
         ('AtPose', b, p) for b, p in tamp_problem.goal_poses.items()
     ])
 
+    print('Initial predicates:')
+    print(init)
+    print('Goal predicates:')
+    print(goal)
+
     # TODO: convert to lower case
     stream_map = {
         #'sample-pose': from_gen_fn(lambda: ((np.array([x, 0]),) for x in range(len(poses), n_poses))),
+        # ? simple enumerator
         'sample-pose': from_gen_fn(lambda: ((p,) for p in tamp_problem.poses)),
+        # ? in this case of a floating gripper the IK is trivial
         'inverse-kinematics':  from_fn(lambda p: (p + GRASP,)),
+        # ? if tested in collision, certify CollisionFree
         'test-cfree': from_test(lambda *args: not collision_test(*args)),
-        'collision': collision_test,
+        # 'collision': collision_test,
         'distance': distance_fn,
     }
 
@@ -129,11 +137,13 @@ def main():
     tamp_problem = problem_fn()
     print(tamp_problem)
 
-    stream_info = {
-        'test-cfree': StreamInfo(negate=True),
-    }
     pddlstream_problem = pddlstream_from_tamp(tamp_problem)
     if args.algorithm == 'focused':
+        # ? Must-have: apply test-cfree implicitly, only needed in the optimistic algorithms
+        stream_info = {
+            'test-cfree': StreamInfo(negate=True),
+        }
+
         #solution = solve_serialized(pddlstream_problem, planner='max-astar', unit_costs=args.unit, stream_info=stream_info)
         solution = solve_focused(pddlstream_problem, unit_costs=args.unit, stream_info=stream_info, debug=False)
     elif args.algorithm == 'incremental':

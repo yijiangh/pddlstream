@@ -49,7 +49,7 @@ def solve_pddlstream(focused=False):
     if focused:
         solution = solve_focused(pddlstream_problem, unit_costs=True)
     else:
-        solution = solve_incremental(pddlstream_problem, unit_costs=True, planner='cerberus', debug=False)
+        solution = solve_incremental(pddlstream_problem, unit_costs=True, debug=False) # planner='cerberus',
     print_solution(solution)
 
 ##################################################

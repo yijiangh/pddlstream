@@ -21,6 +21,7 @@ def get_difference(p1, p2):
 
 
 def collision_test(p1, p2):
+    # returns True if in collision
     return get_length(get_difference(p1, p2)) < 1e-3
 
 
@@ -46,6 +47,7 @@ INITIAL_CONF = np.array([0, -1])
 def get_shift_one_problem(n_blocks=2, n_poses=9):
     assert(1 <= n_blocks <= n_poses)
     blocks = [BLOCK_TEMPLATE.format(i) for i in range(n_blocks)]
+    # pre-discretized block poses
     poses = [np.array([x, 0]) for x in range(n_poses)]
 
     block_poses = dict(zip(blocks, poses))

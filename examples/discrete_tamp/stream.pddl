@@ -1,9 +1,14 @@
 (define (stream discrete-tamp)
-  (:rule
-    :inputs (?q ?p)
-    :domain (Kin ?q ?p)
-    :certified (and (Conf ?q) (Pose ?p))
-  )
+; {':stream', ':rule', ':function', ':predicate', ':optimizer', ':certified'}
+; See algorithms.parse_streams
+
+; automatically certify related static predicates
+;   (:rule
+;     :inputs (?q ?p)
+;     :domain (Kin ?q ?p)
+;     :certified (and (Conf ?q) (Pose ?p))
+;   )
+
   ;(:rule
   ;  :inputs (?b ?p)
   ;  :domain (AtPose ?b ?p) ; This is a fluent
@@ -22,7 +27,9 @@
     :inputs (?p)
     :domain (Pose ?p)
     :outputs (?q)
-    :certified (Kin ?q ?p)
+    :certified (and (Kin ?q ?p)
+                    (Conf ?q)
+                )
   )
   (:stream test-cfree
     :inputs (?p1 ?p2)

@@ -72,6 +72,8 @@ def process_instance(store, domain, instance, disable=True):
 
 def process_stream_plan(store, domain, disabled, stream_plan, action_plan, cost,
                         bind=True, max_failures=0):
+    """Focused process streams
+    """
     # Bad old implementation of this method
     # The only advantage of this vs skeleton is that this can avoid the combinatorial growth in bindings
     if not is_plan(stream_plan):
