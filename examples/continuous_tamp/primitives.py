@@ -188,18 +188,25 @@ def test_reachable(*args, **kwargs):
 ##################################################
 
 TAMPState = namedtuple('TAMPState', ['robot_confs', 'holding', 'block_poses'])
-TAMPProblem = namedtuple('TAMPProblem', ['initial', 'regions', 'goal_conf', 'goal_regions'])
+TAMPProblem = namedtuple('TAMPProblem', ['initial', 'regions',
+                                         'goal_conf', 'goal_regions', 'goal_cooked'])
 
-REGION_NAME = 'red'
+GOAL_NAME = 'red'
+STOVE_NAME = 'stove'
+
 INITIAL_CONF = np.array([-5, CARRY_Y + 1])
 #GOAL_CONF = None
 GOAL_CONF = INITIAL_CONF
 
 REGIONS = {
     GROUND_NAME: (-10, 10),
-    REGION_NAME: (5, 10),
+    GOAL_NAME: (5, 10),
     #REGION_NAME: (7.5, 10),
+    #STOVE_NAME: (5, 10),
 }
+
+ENVIRONMENT_NAMES = [GROUND_NAME]
+STOVE_NAMES = [STOVE_NAME]
 
 def make_blocks(num):
     #return ['b{}'.format(i) for i in range(num)]
@@ -217,23 +224,25 @@ def mirror(n_blocks=1, n_robots=2):
 
     initial = TAMPState(initial_confs, {}, dict(zip(blocks, poses)))
     goal_regions = {block: pose for block, pose in zip(blocks, goal_poses)}
+    goal_cooked = {}
 
-    return TAMPProblem(initial, REGIONS, GOAL_CONF, goal_regions)
+    return TAMPProblem(initial, REGIONS, GOAL_CONF, goal_regions, goal_cooked)
 
 def tight(n_blocks=2, n_goals=2, n_robots=1):
     confs = [INITIAL_CONF, np.array([-1, 1])*INITIAL_CONF]
     robots = ['r{}'.format(x) for x in range(n_robots)]
     initial_confs = dict(zip(robots, confs))
 
-    #poses = [np.array([(BLOCK_WIDTH + 1)*x, 0]) for x in range(n_blocks)]
+    #poses = [np.array([(BLOCK_WIDTH + 1)*x, 0]) for x in range(n_blocks)] # reversed
     poses = [np.array([-(BLOCK_WIDTH + 1) * x, 0]) for x in range(n_blocks)]
-    #poses = [sample_region(b, regions[GROUND]) for b in blocks]
+    #poses = [sample_region(b, regions[GROUND]) for b in blocks] # randomly sample
     blocks = make_blocks(len(poses))
 
     initial = TAMPState(initial_confs, {}, dict(zip(blocks, poses)))
-    goal_regions = {block: REGION_NAME for block in blocks[:n_goals]}
+    goal_regions = {block: GOAL_NAME for block in blocks[:n_goals]}
+    goal_cooked = {}
 
-    return TAMPProblem(initial, REGIONS, GOAL_CONF, goal_regions)
+    return TAMPProblem(initial, REGIONS, GOAL_CONF, goal_regions, goal_cooked)
 
 def blocked(n_blocks=3, n_robots=1, deterministic=True):
     confs = [INITIAL_CONF, np.array([-1, 1])*INITIAL_CONF]
@@ -249,14 +258,15 @@ def blocked(n_blocks=3, n_robots=1, deterministic=True):
         block_poses = dict(zip(blocks, poses))
     else:
         block_regions = {blocks[0]: GROUND_NAME}
-        block_regions.update({b: REGION_NAME for b in blocks[1:2]})
+        block_regions.update({b: GOAL_NAME for b in blocks[1:2]})
         block_regions.update({b: GROUND_NAME for b in blocks[2:]})
         block_poses = rejection_sample_placed(block_regions=block_regions, regions=REGIONS)
 
     initial = TAMPState(initial_confs, {}, block_poses)
-    goal_regions = {blocks[0]: 'red'}
+    goal_regions = {blocks[0]: GOAL_NAME}
+    goal_cooked = {}
 
-    return TAMPProblem(initial, REGIONS, GOAL_CONF, goal_regions)
+    return TAMPProblem(initial, REGIONS, GOAL_CONF, goal_regions, goal_cooked)
 
 def dual(n_blocks=2, n_goals=2, n_robots=1, goal_regions=['red', 'green']):
     regions = {
@@ -275,8 +285,35 @@ def dual(n_blocks=2, n_goals=2, n_robots=1, goal_regions=['red', 'green']):
 
     initial = TAMPState(initial_confs, {}, dict(zip(blocks, poses)))
     goal_regions = {block: goal_regions for block in blocks[:n_goals]}
+    goal_cooked = {}
 
-    return TAMPProblem(initial, regions, GOAL_CONF, goal_regions)
+    return TAMPProblem(initial, regions, GOAL_CONF, goal_regions, goal_cooked)
+
+def cook(n_blocks=2, n_goals=1, n_robots=1):
+    # TODO: render using PyBullet
+    regions = {
+        GROUND_NAME: (-10, -5), # 'shelf'
+        'table': (-2, 2),
+        STOVE_NAME: (5, 10),
+    }
+
+    robots = ['r{}'.format(x) for x in range(n_robots)]
+    confs = [INITIAL_CONF, np.array([-1, 1])*INITIAL_CONF]
+
+    blocks = make_blocks(n_blocks)
+    goal_blocks = blocks[:n_goals]
+    goal_cooked = set(goal_blocks)
+    other_blocks = set(blocks) - goal_cooked
+
+    initial_regions = {block: GROUND_NAME for block in goal_blocks}
+    initial_regions.update({block: 'table' for block in other_blocks})
+    block_poses = rejection_sample_placed(block_regions=initial_regions, regions=regions)
+    initial = TAMPState(dict(zip(robots, confs)), {}, block_poses)
+    goal_regions = {block: 'table' for block in goal_cooked}
+    # TODO: draw table legs
+    # TODO: stove top burners
+
+    return TAMPProblem(initial, regions, GOAL_CONF, goal_regions, goal_cooked)
 
 #def blocked2(n_blocks=0, **kwargs):
 #    lower, upper = REGIONS[GROUND_NAME]
@@ -295,6 +332,7 @@ PROBLEMS = [
     tight,
     blocked,
     dual,
+    cook,
     #blocked2,
 ]
 
@@ -414,6 +452,7 @@ def update_state(state, action, t):
             block_poses[block] = pose
             robot_confs[robot] = get_value_at_time(traj[::-1], (fraction - threshold) / (1 - threshold))
     elif name == 'cook':
+        # TODO: update the object color
         pass
     else:
         raise ValueError(name)

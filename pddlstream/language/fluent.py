@@ -1,48 +1,9 @@
-from pddlstream.algorithms.downward import get_literals, get_conjunctive_parts, make_preconditions
-from pddlstream.algorithms.instantiate_task import PYPLANNERS_PATH
-
 from pddlstream.language.constants import get_prefix, get_args
 from pddlstream.language.exogenous import replace_literals
+from pddlstream.language.external import get_domain_predicates
 from pddlstream.language.stream import Stream
 from pddlstream.utils import find_unique, get_mapping
 
-import os
-
-def has_attachments(domain):
-    return any(getattr(action, 'attachments', {}) for action in domain.actions)
-
-def compile_fluent_attachments(domain, externals):
-    import pddl
-    state_streams = set(filter(lambda e: isinstance(e, Stream) and e.is_fluent(), externals)) # is_special
-    if not state_streams:
-        return externals
-    predicate_map = get_predicate_map(state_streams)
-    if predicate_map and not os.path.exists(PYPLANNERS_PATH):
-        raise NotImplementedError('Algorithm does not support fluent streams: {}'.format(
-            [stream.name for stream in predicate_map.values()]))
-    for action in domain.actions:
-        for effect in action.effects:
-            # TODO: conditional effects
-            if any(literal.predicate in predicate_map for literal in get_literals(effect.condition)):
-                raise ValueError(effect)
-        action.attachments = {}
-        preconditions = []
-        for literal in get_conjunctive_parts(action.precondition):
-            if not isinstance(literal, pddl.Literal):
-                raise NotImplementedError(literal)
-            if literal.predicate in predicate_map:
-                stream = predicate_map[literal.predicate]
-                if not stream.is_test():
-                    raise NotImplementedError(stream)
-                assert remap_certified(literal, stream) is not None
-                action.attachments[literal] = stream
-            else:
-                preconditions.append(literal)
-        action.precondition = pddl.Conjunction(preconditions).simplified()
-        #fn = lambda l: pddl.Truth() if l.predicate in predicate_map else l
-        #action.precondition = replace_literals(fn, action.precondition).simplified()
-        #action.dump()
-    return [external for external in externals if external not in state_streams]
 
 def get_predicate_map(state_streams):
     predicate_map = {}
@@ -50,8 +11,8 @@ def get_predicate_map(state_streams):
         for fact in state_stream.certified:
             predicate = get_prefix(fact)
             if predicate in predicate_map:
-                # TODO: could make a conjunction condition instead
-                raise NotImplementedError()
+                # TODO: could make a disjunctive condition instead
+                raise NotImplementedError('Only one fluent stream can certify a predicate: {}'.format(predicate))
             predicate_map[predicate] = state_stream
     return predicate_map
 
@@ -63,16 +24,19 @@ def remap_certified(literal, stream):
     return mapping
 
 def compile_fluent_streams(domain, externals):
-    state_streams = list(filter(lambda e: isinstance(e, Stream) and e.is_special(), externals))
+    state_streams = set(filter(lambda e: isinstance(e, Stream) and e.is_special(), externals))
     predicate_map = get_predicate_map(state_streams)
     if not predicate_map:
         return state_streams
+    # TODO: allow usage as long as in the same action (e.g. for costs functions)
+    # TODO: could create a separate action per control parameter
+    if get_domain_predicates(externals) & set(predicate_map):
+        raise RuntimeError('Fluent streams certified facts cannot be domain facts')
 
     # TODO: could make free parameters free
-    # TODO: allow functions on top the produced values?
-    # TODO: check that generated values are not used in the effects of any actions
     # TODO: could treat like a normal stream that generates values (but with no inputs required/needed)
-    def fn(literal):
+    import pddl
+    def fn(literal, action):
         if literal.predicate not in predicate_map:
             return literal
         # TODO: other checks on only inputs
@@ -81,6 +45,11 @@ def compile_fluent_streams(domain, externals):
         if mapping is None:
             # TODO: this excludes typing. This is not entirely safe
             return literal
+        output_args = set(mapping[arg] for arg in stream.outputs)
+        for effect in action.effects:
+            if isinstance(effect, pddl.Effect) and (output_args & set(effect.literal.args)):
+                raise RuntimeError('Fluent stream outputs cannot be in action effects: {}'.format(
+                    effect.literal.predicate))
         blocked_args = tuple(mapping[arg] for arg in stream.inputs)
         blocked_literal = literal.__class__(stream.blocked_predicate, blocked_args).negate()
         if stream.is_negated():
@@ -88,12 +57,10 @@ def compile_fluent_streams(domain, externals):
             return blocked_literal
         return pddl.Conjunction([literal, blocked_literal])
 
-    import pddl
     for action in domain.actions:
-        action.precondition = replace_literals(fn, action.precondition).simplified()
-        # TODO: throw an error if the effect would be altered
+        action.precondition = replace_literals(fn, action.precondition, action).simplified()
         for effect in action.effects:
-            effect.condition = replace_literals(fn, effect.condition).simplified()
+            effect.condition = replace_literals(fn, effect.condition, action).simplified()
     for axiom in domain.axioms:
-        axiom.condition = replace_literals(fn, axiom.condition).simplified()
+        axiom.condition = replace_literals(fn, axiom.condition, action).simplified()
     return state_streams
