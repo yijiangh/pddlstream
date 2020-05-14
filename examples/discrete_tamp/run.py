@@ -41,7 +41,7 @@ def pddlstream_from_tamp(tamp_problem):
         #Type(q100, 'conf'),
         ('CanMove',),
         ('Conf', q100),
-        ('Conf', initial.conf),
+        ('Conf', initial.conf), # [0, -1]
         ('AtConf', initial.conf),
         ('HandEmpty',),
         Equal((TOTAL_COST,), 0)] + \
